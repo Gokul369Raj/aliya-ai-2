@@ -3,7 +3,7 @@ const path = require('path');
 const { IMPORTABLE_EXTENSIONS } = require('./constants');
 
 const FLOW_LIBRARY = [
-  { id: 'full', label: 'Full Project Pipeline', keywords: ['full', 'project', 'pipeline', 'architecture', 'system', 'repo'], maxNodes: 300 },
+  { id: 'application', label: 'Application Flow', keywords: ['application', 'project', 'pipeline', 'architecture', 'system', 'repo'], maxNodes: 300 },
   { id: 'auth', label: 'Authentication Flow', keywords: ['auth', 'authentication', 'login', 'jwt', 'session', 'oauth'], maxNodes: 150 },
   { id: 'api', label: 'API Request Flow', keywords: ['api', 'request', 'rest', 'graphql', 'endpoint', 'route'], maxNodes: 200 },
   { id: 'db', label: 'Database Flow', keywords: ['db', 'database', 'query', 'orm', 'sql', 'mongoose', 'prisma'], maxNodes: 150 },
@@ -45,6 +45,14 @@ const FLOW_EDGE_TYPES = new Set([
   'error-flow',
   'websocket-flow',
   'microservice-flow',
+]);
+
+const SUPPORTING_FLOW_EDGE_TYPES = new Set([
+  'dependency',
+  'dynamic-import',
+  're-export',
+  'function-call',
+  'service-flow',
 ]);
 
 const CODE_EXTENSIONS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.py', '.php', '.rb', '.go', '.java']);
@@ -249,6 +257,104 @@ function extractCalledTokens(content) {
   }
 
   return [...tokens];
+}
+
+function lineNumberFor(content, regexes) {
+  for (const regex of regexes) {
+    const match = regex.exec(content);
+    regex.lastIndex = 0;
+    if (!match) continue;
+    return content.slice(0, match.index).split('\n').length;
+  }
+  return null;
+}
+
+function detectFrameworks(metadataList, files) {
+  const packageFiles = files.filter((file) => /(^|\/)package\.json$/i.test(file.path || ''));
+  const deps = new Set();
+  const importedPackages = new Set();
+  for (const meta of metadataList) {
+    for (const imported of meta.imports || []) {
+      if (!imported.specifier || imported.specifier.startsWith('.') || imported.specifier.startsWith('/')) continue;
+      importedPackages.add(imported.specifier);
+      importedPackages.add(imported.specifier.split('/')[0].startsWith('@') ? imported.specifier.split('/').slice(0, 2).join('/') : imported.specifier.split('/')[0]);
+    }
+  }
+  for (const file of packageFiles) {
+    try {
+      const manifest = JSON.parse(file.content || '{}');
+      for (const section of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+        for (const dependency of Object.keys(manifest[section] || {})) deps.add(dependency);
+      }
+    } catch {
+      // Ignore malformed manifests; repository analysis must stay best-effort and evidence-only.
+    }
+  }
+
+  const content = metadataList.map((meta) => `${meta.path}\n${meta.imports.map((item) => item.specifier).join('\n')}`).join('\n').toLowerCase();
+  const hasPackage = (name) => deps.has(name) || importedPackages.has(name);
+  const candidates = [
+    ['Express', () => hasPackage('express') || /express\(/.test(content)],
+    ['React', () => hasPackage('react') || /createroot\(|reactdom/.test(content)],
+    ['Next.js', () => hasPackage('next') || /next\.config|(^|\/)(app|pages)\//.test(content)],
+    ['NestJS', () => hasPackage('@nestjs/core') || /nestfactory|@nestjs\//.test(content)],
+    ['Fastify', () => hasPackage('fastify') || /fastify\(/.test(content)],
+    ['Django', () => /manage\.py|django/.test(content)],
+    ['Flask', () => /from flask import|flask\(/.test(content)],
+    ['FastAPI', () => /fastapi|fastapi\(/.test(content)],
+    ['Spring Boot', () => /spring-boot|@springbootapplication/.test(content)],
+    ['Laravel', () => /artisan|illuminate\\|laravel/.test(content)],
+    ['Ruby on Rails', () => /gem ['"]rails|rails/.test(content)],
+  ];
+
+  return candidates.filter(([, test]) => test()).map(([label]) => label);
+}
+
+function summarizeDependencies(metadataList, files) {
+  const deps = new Set();
+  for (const meta of metadataList) {
+    for (const imported of meta.imports) {
+      if (imported.specifier && !imported.specifier.startsWith('.') && !imported.specifier.startsWith('/')) {
+        deps.add(imported.specifier.split('/')[0].startsWith('@') ? imported.specifier.split('/').slice(0, 2).join('/') : imported.specifier.split('/')[0]);
+      }
+    }
+  }
+
+  for (const file of files) {
+    if (!/(^|\/)package\.json$/i.test(file.path || '')) continue;
+    try {
+      const manifest = JSON.parse(file.content || '{}');
+      for (const section of ['dependencies', 'devDependencies']) {
+        for (const dependency of Object.keys(manifest[section] || {})) deps.add(dependency);
+      }
+    } catch {
+      // Ignore malformed manifests.
+    }
+  }
+
+  return [...deps].sort();
+}
+
+function classifyEvidence(meta, flowId) {
+  const evidence = [];
+  const roles = new Set(meta.roles || []);
+  if (roles.has(flowId)) evidence.push(`${flowId} role`);
+  if (flowId === 'application' && roles.has('startup')) evidence.push('startup entry signal');
+  if (flowId === 'api' && (meta.routeDefs.length || meta.apiCalls.length)) evidence.push('route/API call metadata');
+  if (flowId === 'auth' && meta.hasAuthSignal) evidence.push('auth token/session signal');
+  if (flowId === 'db' && meta.hasDbSignal) evidence.push('database query/ORM signal');
+  if (flowId === 'routing' && meta.routeDefs.length) evidence.push('route definition');
+  if (flowId === 'component' && (meta.jsxUsages.length || roles.has('component'))) evidence.push('component/JSX usage');
+  if (flowId === 'startup' && roles.has('startup')) evidence.push('entry point pattern');
+  if (flowId === 'state' && roles.has('state')) evidence.push('state management signal');
+  if (flowId === 'event' && roles.has('event')) evidence.push('event/listener signal');
+  if (flowId === 'ai' && roles.has('ai')) evidence.push('AI/LLM signal');
+  if (flowId === 'payment' && roles.has('payment')) evidence.push('payment provider signal');
+  if (flowId === 'cache' && roles.has('cache')) evidence.push('cache/redis signal');
+  if (flowId === 'error' && roles.has('error')) evidence.push('error handling signal');
+  if (flowId === 'websocket' && roles.has('websocket')) evidence.push('websocket/realtime signal');
+  if (flowId === 'microservice' && roles.has('microservice')) evidence.push('queue/worker signal');
+  return evidence;
 }
 
 function extractJsxUsages(content) {
@@ -483,7 +589,15 @@ function orderFlowNodes(nodeIds, seeds, metadataById, adjacency) {
   });
 }
 
-function buildFlow(flowDefinition, metadataList, metadataById, allEdges, risks, { roleFilter, seedFilter }) {
+function buildFlow(flowDefinition, metadataList, metadataById, allEdges, risks, {
+  roleFilter,
+  seedFilter,
+  frameworks = [],
+  dependencies = [],
+  minNodes = 2,
+  requiredEdgeTypes = [],
+  evidenceEdgeTypes,
+}) {
   const filtered = metadataList.filter((meta) => roleFilter(meta));
   if (!filtered.length) return null;
 
@@ -491,7 +605,9 @@ function buildFlow(flowDefinition, metadataList, metadataById, allEdges, risks, 
     .filter((meta) => seedFilter(meta))
     .sort((left, right) => scoreFlowNode(right) - scoreFlowNode(left));
 
-  const seeds = (rankedSeeds.length ? rankedSeeds : filtered)
+  if (!rankedSeeds.length) return null;
+
+  const seeds = rankedSeeds
     .slice(0, Math.min(6, filtered.length))
     .map((meta) => meta.id);
 
@@ -527,6 +643,23 @@ function buildFlow(flowDefinition, metadataList, metadataById, allEdges, risks, 
   const orderedNodes = orderFlowNodes([...included], seeds, metadataById, adjacency);
   const includedSet = new Set(orderedNodes);
   const flowEdges = relevantEdges.filter((edge) => includedSet.has(edge.source) && includedSet.has(edge.target));
+  const requiredEdges = requiredEdgeTypes.length
+    ? flowEdges.filter((edge) => requiredEdgeTypes.includes(edge.type))
+    : flowEdges;
+  const requiredEvidenceTypes = evidenceEdgeTypes || requiredEdgeTypes.filter((type) => !SUPPORTING_FLOW_EDGE_TYPES.has(type));
+  const evidenceEdges = requiredEvidenceTypes.length
+    ? flowEdges.filter((edge) => requiredEvidenceTypes.includes(edge.type))
+    : requiredEdges;
+  const stageEvidenceCount = orderedNodes.reduce((count, nodeId) => {
+    const meta = metadataById.get(nodeId);
+    return count + classifyEvidence(meta, flowDefinition.id).length;
+  }, 0);
+
+  if (
+    orderedNodes.length < minNodes ||
+    !requiredEdges.length ||
+    (requiredEvidenceTypes.length ? !evidenceEdges.length : stageEvidenceCount === 0)
+  ) return null;
   flowEdges.forEach((edge) => edgeKeys.add(`${edge.source}->${edge.target}`));
 
   const flowRisks = risks.filter((risk) => includedSet.has(risk.fileId) || (risk.relatedFileId && includedSet.has(risk.relatedFileId)));
@@ -542,12 +675,36 @@ function buildFlow(flowDefinition, metadataList, metadataById, allEdges, risks, 
       architectureRole: meta.roles.join(', ') || meta.layer,
       dependencyCount: meta.resolvedImports.length,
       outboundCalls: meta.calls.length,
+      lineNumber: meta.lineNumber,
+      functions: meta.declaredSymbols.slice(0, 8),
+      imports: meta.imports.map((item) => item.specifier).slice(0, 12),
+      exports: meta.exportedSymbols.slice(0, 8),
+      calls: meta.calls.slice(0, 12),
+      routes: meta.routeDefs.slice(0, 6),
+      apiCalls: meta.apiCalls.slice(0, 6),
+      evidence: classifyEvidence(meta, flowDefinition.id),
       riskCount: flowRisks.filter((risk) => risk.fileId === nodeId).length,
       summary: `${path.posix.basename(meta.path)} acts in the ${meta.layer} layer.`,
     };
   });
 
   const layerSet = new Set(stages.map((stage) => stage.layer));
+  const sourceFiles = orderedNodes.map((nodeId) => metadataById.get(nodeId)?.path).filter(Boolean);
+  const verification = ['Import Graph', 'Dependency Graph'];
+  if (stages.some((stage) => stage.functions.length || stage.exports.length)) verification.push('Symbol Resolution');
+  if (flowEdges.some((edge) => edge.type.includes('flow') || edge.type.includes('route') || edge.type === 'api-call')) verification.push('Call Graph');
+  if (frameworks.length) verification.push('Framework Analysis');
+  const evidence = [
+    ...new Set([
+      ...stages.flatMap((stage) => stage.evidence),
+      ...requiredEdges.map((edge) => edge.type),
+      ...sourceFiles.slice(0, 6),
+    ]),
+  ];
+  const confidence = Math.min(99, Math.max(62, 48 + verification.length * 8 + Math.min(20, evidence.length * 3) + Math.min(12, evidenceEdges.length || requiredEdges.length)));
+  const entryPoint = stages[0] || null;
+  const exitPoint = stages[stages.length - 1] || null;
+
   return {
     id: flowDefinition.id,
     type: flowDefinition.label,
@@ -558,11 +715,28 @@ function buildFlow(flowDefinition, metadataList, metadataById, allEdges, risks, 
     edgeKeys: [...edgeKeys],
     stages,
     layers: [...layerSet],
+    confidence,
+    evidence,
+    sourceFiles,
+    entryPoint,
+    exitPoint,
+    intermediateSteps: stages.slice(1, -1),
+    framework: frameworks.join(', ') || 'Unable to Verify',
+    dependencies: dependencies.filter((dependency) => {
+      const needle = dependency.toLowerCase();
+      return stages.some((stage) => stage.imports.some((specifier) => specifier.toLowerCase().includes(needle)));
+    }).slice(0, 12),
+    relatedModules: [...layerSet],
+    verification,
+    evidenceEdgeCount: evidenceEdges.length,
+    requiredEdgeCount: requiredEdges.length,
+    executionSequence: stages.map((stage) => stage.label),
+    explanation: `The detected ${flowDefinition.label} starts at ${entryPoint?.path || 'Unable to Verify'} and follows scanner-confirmed graph edges through ${stages.length} source files before reaching ${exitPoint?.path || 'Unable to Verify'}.`,
     risks: flowRisks.slice(0, 12),
     riskCount: flowRisks.length,
     deadCodeCount: flowRisks.filter((risk) => risk.kind === 'dead-code').length,
     brokenCount: flowRisks.filter((risk) => risk.severity === 'high').length,
-    summary: `${flowDefinition.label} spans ${orderedNodes.length} architecture nodes across ${layerSet.size} layers.`,
+    summary: `${flowDefinition.label} is backed by ${evidence.length} evidence signals, ${evidenceEdges.length || requiredEdges.length} verified flow edges, and ${verification.length} verification methods.`,
   };
 }
 
@@ -591,6 +765,7 @@ function buildArchitectureIntelligence(files, repoName) {
       return {
         id: fileId(normalizedPath),
         path: normalizedPath,
+        content: file.content || '',
         label: path.posix.basename(normalizedPath),
         ext: path.posix.extname(normalizedPath).toLowerCase(),
         roles,
@@ -616,6 +791,17 @@ function buildArchitectureIntelligence(files, repoName) {
   const edgeAccumulator = createEdgeAccumulator();
   const risks = [];
   const riskKeys = new Set();
+
+  for (const meta of metadataList) {
+    meta.lineNumber = lineNumberFor(meta.content || '', [
+      /(?:app|router)\.(get|post|put|patch|delete|options|head|use)\s*\(/,
+      /function\s+[A-Za-z_$][\w$]*\s*\(/,
+      /class\s+[A-Za-z_$][\w$]*\s+/,
+      /(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=/,
+      /import\s+[\s\S]*?\s+from\s+['"][^'"]+['"]/,
+      /require\(\s*['"][^'"]+['"]\s*\)/,
+    ]);
+  }
 
   for (const meta of metadataList) {
     for (const symbol of [...meta.declaredSymbols, ...meta.exportedSymbols]) {
@@ -839,19 +1025,28 @@ function buildArchitectureIntelligence(files, repoName) {
     };
   }
 
+  const frameworks = detectFrameworks(metadataList, files);
+  const dependencies = summarizeDependencies(metadataList, files);
+
+  const flowContext = { frameworks, dependencies };
+
   const flows = FLOW_LIBRARY
     .map((definition) => {
-      if (definition.id === 'full') {
+      if (definition.id === 'application') {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => !meta.roles.includes('config') || meta.roles.includes('startup'),
           seedFilter: (meta) => meta.roles.includes('startup') || meta.roles.includes('routing') || meta.roles.includes('controller') || meta.roles.includes('component'),
+          requiredEdgeTypes: ['startup-flow', 'routing-flow', 'component-flow', 'service-flow', 'function-call', 'dynamic-import'],
+          ...flowContext,
         });
       }
 
       if (definition.id === 'auth') {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => meta.roles.some((role) => ['auth', 'routing', 'controller', 'service', 'repository', 'database', 'middleware', 'component', 'frontend', 'api'].includes(role)),
-          seedFilter: (meta) => meta.roles.includes('auth') || /login|register|session|token/i.test(meta.path),
+          seedFilter: (meta) => meta.roles.includes('auth') && (meta.hasAuthSignal || /auth|login|register|session|token/i.test(meta.path)),
+          requiredEdgeTypes: ['auth-flow', 'route-middleware', 'route-handler', 'function-call'],
+          ...flowContext,
         });
       }
 
@@ -859,6 +1054,8 @@ function buildArchitectureIntelligence(files, repoName) {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => meta.roles.some((role) => ['api', 'routing', 'controller', 'service', 'repository', 'middleware', 'component', 'frontend', 'backend', 'database'].includes(role)),
           seedFilter: (meta) => meta.apiCalls.length > 0 || meta.routeDefs.length > 0 || meta.roles.includes('controller'),
+          requiredEdgeTypes: ['api-call', 'route-handler', 'route-middleware', 'routing-flow', 'service-flow', 'function-call'],
+          ...flowContext,
         });
       }
 
@@ -866,6 +1063,8 @@ function buildArchitectureIntelligence(files, repoName) {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => meta.roles.some((role) => ['database', 'repository', 'service', 'controller', 'api', 'middleware', 'auth'].includes(role)),
           seedFilter: (meta) => meta.roles.includes('database') || meta.roles.includes('repository') || meta.hasDbSignal,
+          requiredEdgeTypes: ['database-flow', 'service-flow', 'function-call'],
+          ...flowContext,
         });
       }
 
@@ -873,6 +1072,8 @@ function buildArchitectureIntelligence(files, repoName) {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => meta.roles.some((role) => ['state', 'component', 'frontend', 'api'].includes(role)),
           seedFilter: (meta) => meta.roles.includes('state'),
+          requiredEdgeTypes: ['state-flow', 'component-flow', 'function-call'],
+          ...flowContext,
         });
       }
 
@@ -880,6 +1081,8 @@ function buildArchitectureIntelligence(files, repoName) {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => meta.roles.some((role) => ['routing', 'middleware', 'controller', 'api', 'frontend', 'backend'].includes(role)),
           seedFilter: (meta) => meta.roles.includes('routing') || meta.routeDefs.length > 0 || meta.roles.includes('middleware'),
+          requiredEdgeTypes: ['routing-flow', 'route-handler', 'route-middleware', 'api-call'],
+          ...flowContext,
         });
       }
 
@@ -887,6 +1090,8 @@ function buildArchitectureIntelligence(files, repoName) {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => meta.roles.some((role) => ['component', 'frontend', 'state', 'api'].includes(role)),
           seedFilter: (meta) => meta.roles.includes('component') || meta.jsxUsages.length > 0,
+          requiredEdgeTypes: ['component-flow', 'state-flow', 'api-call', 'function-call'],
+          ...flowContext,
         });
       }
 
@@ -894,6 +1099,8 @@ function buildArchitectureIntelligence(files, repoName) {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => meta.roles.some((role) => ['startup', 'config', 'routing', 'middleware', 'backend', 'frontend', 'api'].includes(role)),
           seedFilter: (meta) => meta.roles.includes('startup') || meta.roles.includes('config'),
+          requiredEdgeTypes: ['startup-flow', 'dynamic-import', 'function-call', 'routing-flow'],
+          ...flowContext,
         });
       }
 
@@ -901,6 +1108,53 @@ function buildArchitectureIntelligence(files, repoName) {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => meta.roles.some((role) => ['event', 'component', 'frontend', 'api', 'state'].includes(role)),
           seedFilter: (meta) => meta.roles.includes('event'),
+          requiredEdgeTypes: ['event-flow', 'component-flow', 'state-flow', 'function-call'],
+          ...flowContext,
+        });
+      }
+
+      if (definition.id === 'payment') {
+        return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
+          roleFilter: (meta) => meta.roles.some((role) => ['payment', 'api', 'routing', 'controller', 'service', 'repository', 'database', 'frontend'].includes(role)),
+          seedFilter: (meta) => meta.roles.includes('payment') && /stripe|paypal|razorpay|checkout|payment|billing|subscription/i.test(`${meta.path}\n${meta.content}`),
+          requiredEdgeTypes: ['payment-flow', 'route-handler', 'api-call', 'service-flow', 'function-call'],
+          ...flowContext,
+        });
+      }
+
+      if (definition.id === 'cache') {
+        return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
+          roleFilter: (meta) => meta.roles.some((role) => ['cache', 'database', 'service', 'controller', 'api', 'infrastructure'].includes(role)),
+          seedFilter: (meta) => meta.roles.includes('cache') && /redis|memcached|cache/i.test(`${meta.path}\n${meta.content}`),
+          requiredEdgeTypes: ['cache-flow', 'database-flow', 'service-flow', 'function-call'],
+          ...flowContext,
+        });
+      }
+
+      if (definition.id === 'error') {
+        return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
+          roleFilter: (meta) => meta.roles.some((role) => ['error', 'middleware', 'api', 'controller', 'service', 'backend', 'frontend'].includes(role)),
+          seedFilter: (meta) => meta.roles.includes('error') && /try\s*{|catch\s*\(|throw new error|errorhandler|exception/i.test(`${meta.path}\n${meta.content}`),
+          requiredEdgeTypes: ['error-flow', 'route-middleware', 'service-flow', 'function-call'],
+          ...flowContext,
+        });
+      }
+
+      if (definition.id === 'websocket') {
+        return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
+          roleFilter: (meta) => meta.roles.some((role) => ['websocket', 'event', 'api', 'service', 'frontend', 'backend'].includes(role)),
+          seedFilter: (meta) => meta.roles.includes('websocket') && /socket\.io|new\s+websocket|websocket|socket\.emit|socket\.on|\bws\b/i.test(`${meta.path}\n${meta.content}`),
+          requiredEdgeTypes: ['websocket-flow', 'event-flow', 'service-flow', 'function-call'],
+          ...flowContext,
+        });
+      }
+
+      if (definition.id === 'microservice') {
+        return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
+          roleFilter: (meta) => meta.roles.some((role) => ['microservice', 'infrastructure', 'api', 'controller', 'service', 'backend'].includes(role)),
+          seedFilter: (meta) => meta.roles.includes('microservice') && /kafka|rabbitmq|sqs|bullmq|pubsub|queue|worker/i.test(`${meta.path}\n${meta.content}`),
+          requiredEdgeTypes: ['microservice-flow', 'service-flow', 'api-call', 'function-call'],
+          ...flowContext,
         });
       }
 
@@ -908,13 +1162,15 @@ function buildArchitectureIntelligence(files, repoName) {
         return buildFlow(definition, metadataList, metadataById, edgeAccumulator.edges, risks, {
           roleFilter: (meta) => meta.roles.some((role) => ['ai', 'service', 'api', 'database'].includes(role)),
           seedFilter: (meta) => meta.roles.includes('ai'),
+          requiredEdgeTypes: ['ai-flow', 'service-flow', 'api-call', 'function-call'],
+          ...flowContext,
         });
       }
 
       return null;
     })
     .filter(Boolean)
-    .sort((left, right) => right.nodes.length - left.nodes.length);
+    .sort((left, right) => right.confidence - left.confidence || right.nodes.length - left.nodes.length);
 
   const layerSummary = {};
   for (const meta of metadataList) {

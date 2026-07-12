@@ -253,20 +253,124 @@ class PdfReport {
   }
 }
 
+function asArray(value) {
+  return Array.isArray(value) ? value : []
+}
+
+function statusText(value) {
+  if (value === null || value === undefined || value === '') return 'Unable to Verify'
+  return String(value)
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return 'Unable to Verify'
+  return `${value.toFixed(value < 10 && value > 0 ? 1 : 0)}%`
+}
+
+function getPath(file) {
+  return typeof file === 'string' ? file : file?.path || ''
+}
+
+function getFileName(filePath) {
+  return filePath.split('/').filter(Boolean).pop() || filePath || 'Unknown'
+}
+
+function pathMatches(filePath, patterns) {
+  const normalized = String(filePath || '').toLowerCase()
+  return patterns.some((pattern) => pattern.test(normalized))
+}
+
+function classifyFile(file) {
+  const filePath = getPath(file)
+  const lowerPath = filePath.toLowerCase()
+  const name = getFileName(lowerPath)
+  const ext = name.includes('.') ? `.${name.split('.').pop()}` : ''
+  const test = pathMatches(lowerPath, [
+    /(^|\/)(__tests__|tests?|spec|e2e|cypress|playwright)(\/|$)/,
+    /\.(test|spec)\.[a-z0-9]+$/,
+  ])
+  const documentation = pathMatches(lowerPath, [
+    /(^|\/)(docs?|documentation|guides?)(\/|$)/,
+    /(^|\/)readme(\.|$)/,
+    /\.(md|mdx|rst|adoc|txt)$/,
+  ])
+  const generated = pathMatches(lowerPath, [
+    /(^|\/)(dist|build|coverage|generated|\.cache|cache)(\/|$)/,
+    /\.min\.(js|css)$/,
+    /(^|\/).*generated\.[a-z0-9]+$/,
+    /(^|\/)(package-lock|yarn\.lock|pnpm-lock)\.yaml?$/,
+  ])
+  const config = pathMatches(lowerPath, [
+    /(^|\/)(package|tsconfig|vite\.config|next\.config|webpack\.config|rollup\.config|eslint\.config|babel\.config)\.[a-z0-9]+$/,
+    /(^|\/)(dockerfile|docker-compose\.ya?ml|makefile|\.env.example|\.gitignore)$/,
+    /\.(json|ya?ml|toml|ini|config\.[a-z0-9]+)$/,
+  ])
+  const asset = /\.(png|jpe?g|gif|svg|webp|ico|mp4|mp3|wav|woff2?|ttf|otf|pdf)$/.test(lowerPath)
+  const source = !test && !documentation && !generated && !asset && !config
+
+  return { ext, test, documentation, generated, config, asset, source }
+}
+
 function getLanguageBreakdown(analysis) {
-  if (analysis?.summary?.languageBreakdown?.length) return analysis.summary.languageBreakdown
-  const counts = new Map()
-  for (const file of analysis?.files || []) {
+  const files = asArray(analysis?.files)
+  const totals = new Map()
+  for (const file of files) {
     const language = file.language || 'unknown'
-    counts.set(language, (counts.get(language) || 0) + 1)
+    const current = totals.get(language) || { language, count: 0, bytes: 0 }
+    current.count += 1
+    current.bytes += Number(file.size) || 0
+    totals.set(language, current)
   }
-  return [...counts.entries()]
-    .map(([language, count]) => ({ language, count }))
-    .sort((left, right) => right.count - left.count)
+  return [...totals.values()].sort((left, right) => right.count - left.count)
+}
+
+function buildGraphStats(analysis) {
+  const nodes = asArray(analysis?.graph?.nodes)
+  const edges = asArray(analysis?.graph?.edges)
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  const stats = new Map(nodes.map((node) => [node.id, {
+    id: node.id,
+    node,
+    in: 0,
+    out: 0,
+    degree: 0,
+    dependencyOut: 0,
+    dependencyIn: 0,
+  }]))
+
+  for (const rawEdge of edges) {
+    const source = typeof rawEdge.source === 'object' ? rawEdge.source?.id : rawEdge.source
+    const target = typeof rawEdge.target === 'object' ? rawEdge.target?.id : rawEdge.target
+    if (!source || !target) continue
+    const sourceStats = stats.get(source)
+    const targetStats = stats.get(target)
+    if (sourceStats) {
+      sourceStats.out += 1
+      sourceStats.degree += 1
+      if (rawEdge.type === 'dependency') sourceStats.dependencyOut += 1
+    }
+    if (targetStats) {
+      targetStats.in += 1
+      targetStats.degree += 1
+      if (rawEdge.type === 'dependency') targetStats.dependencyIn += 1
+    }
+  }
+
+  const fileStats = [...stats.values()].filter((item) => item.node?.type !== 'folder')
+  return {
+    nodes,
+    edges,
+    nodeById,
+    fileStats,
+    mostConnected: [...fileStats].sort((a, b) => b.degree - a.degree).slice(0, 12),
+    fanIn: [...fileStats].sort((a, b) => b.in - a.in).slice(0, 12),
+    fanOut: [...fileStats].sort((a, b) => b.out - a.out).slice(0, 12),
+    dependencyHeavy: [...fileStats].sort((a, b) => b.dependencyOut - a.dependencyOut).slice(0, 12),
+  }
 }
 
 function selectGraphNodes(analysis, limit = 70) {
-  return [...(analysis?.graph?.nodes || [])]
+  return [...asArray(analysis?.graph?.nodes)]
     .filter((node) => node.type !== 'folder')
     .sort((left, right) => ((right.importance || 0) + (right.riskCount || 0) * 3) - ((left.importance || 0) + (left.riskCount || 0) * 3))
     .slice(0, limit)
@@ -291,10 +395,127 @@ function buildRadialPositions(nodes, x, y, width, height) {
   return positions
 }
 
+function drawTable(pdf, headers, rows, widths) {
+  const maxWidth = PAGE_WIDTH - MARGIN * 2
+  const rawTotal = widths.reduce((sum, width) => sum + width, 0)
+  const scaledWidths = rawTotal > maxWidth ? widths.map((width) => (width / rawTotal) * maxWidth) : widths
+  const totalWidth = scaledWidths.reduce((sum, width) => sum + width, 0)
+  const startX = MARGIN
+  pdf.ensureSpace(32)
+  pdf.rect(startX, pdf.y, totalWidth, 24, THEME.panelAlt, THEME.border)
+  let cursorX = startX
+  headers.forEach((header, index) => {
+    pdf.text(header, cursorX + 6, pdf.y + 15, 6.5, THEME.cyan, 'F2')
+    cursorX += scaledWidths[index]
+  })
+  pdf.y += 24
+
+  rows.forEach((row, rowIndex) => {
+    pdf.ensureSpace(25)
+    pdf.rect(startX, pdf.y, totalWidth, 24, rowIndex % 2 ? '#101014' : THEME.panel, THEME.border)
+    cursorX = startX
+    row.forEach((cell, cellIndex) => {
+      const width = scaledWidths[cellIndex]
+      const text = cleanText(statusText(cell))
+      const maxChars = Math.max(8, Math.floor(width / 4.6))
+      const clipped = text.length > maxChars ? `${text.slice(0, Math.max(0, maxChars - 3))}...` : text
+      pdf.text(clipped, cursorX + 6, pdf.y + 15, 6.7, cellIndex === 0 ? THEME.text : THEME.muted, cellIndex === 0 ? 'F2' : 'F1')
+      cursorX += width
+    })
+    pdf.y += 24
+  })
+  pdf.y += 12
+}
+
+function drawEvidenceList(pdf, title, rows, emptyMessage = 'Not Detected') {
+  pdf.heading(title, 2)
+  if (!rows.length) {
+    pdf.paragraph(emptyMessage, MARGIN, 92, 9, THEME.muted)
+    return
+  }
+  rows.slice(0, 14).forEach((row, index) => {
+    pdf.ensureSpace(42)
+    const color = row.color || CHART_COLORS[index % CHART_COLORS.length]
+    pdf.rect(MARGIN, pdf.y, PAGE_WIDTH - MARGIN * 2, 34, THEME.panel, THEME.border)
+    pdf.rect(MARGIN, pdf.y, 4, 34, color, color)
+    pdf.text(row.title || 'Signal', MARGIN + 12, pdf.y + 13, 8, THEME.text, 'F2')
+    pdf.text(row.detail || row.evidence || 'Evidence unavailable', MARGIN + 12, pdf.y + 26, 6.5, color)
+    if (row.value !== undefined) pdf.text(String(row.value), PAGE_WIDTH - MARGIN - 42, pdf.y + 19, 11, THEME.text, 'F2')
+    pdf.y += 40
+  })
+}
+
+function drawRankedList(pdf, title, rankedRows, metricKey) {
+  pdf.heading(title, 2)
+  const rows = rankedRows
+    .filter((item) => (Number(item[metricKey]) || 0) > 0)
+    .slice(0, 8)
+    .map((item) => [
+      item.node?.path || item.node?.label || item.id,
+      String(item[metricKey] || 0),
+      item.node?.layer || item.node?.language || 'scanner graph',
+    ])
+  drawTable(pdf, ['File', 'Value', 'Evidence'], rows, [300, 54, 138])
+}
+
+function buildInventory(analysis) {
+  const files = asArray(analysis?.files)
+  const classified = files.map((file) => ({ file, ...classifyFile(file) }))
+  const count = files.length || 1
+  const folders = new Set()
+  files.forEach((file) => {
+    const parts = getPath(file).split('/').filter(Boolean)
+    for (let index = 1; index < parts.length; index += 1) {
+      folders.add(parts.slice(0, index).join('/'))
+    }
+  })
+  const byExt = new Map()
+  classified.forEach((item) => {
+    const ext = item.ext || 'none'
+    byExt.set(ext, (byExt.get(ext) || 0) + 1)
+  })
+
+  return {
+    files,
+    classified,
+    fileCount: files.length,
+    folderCount: analysis?.summary?.folderCount ?? folders.size,
+    packages: asArray(analysis?.summary?.externalDependencies),
+    languages: getLanguageBreakdown(analysis),
+    totalSize: files.reduce((sum, file) => sum + (Number(file.size) || 0), 0),
+    assets: classified.filter((item) => item.asset),
+    configs: classified.filter((item) => item.config),
+    docs: classified.filter((item) => item.documentation),
+    tests: classified.filter((item) => item.test),
+    generated: classified.filter((item) => item.generated),
+    sources: classified.filter((item) => item.source),
+    generatedPercent: (classified.filter((item) => item.generated).length / count) * 100,
+    testPercent: (classified.filter((item) => item.test).length / count) * 100,
+    documentationPercent: (classified.filter((item) => item.documentation).length / count) * 100,
+    extensions: [...byExt.entries()].sort((a, b) => b[1] - a[1]),
+    largestFiles: [...files].sort((a, b) => (Number(b.size) || 0) - (Number(a.size) || 0)).slice(0, 12),
+  }
+}
+
+function getRisks(analysis) {
+  return asArray(analysis?.architecture?.risks)
+}
+
+function riskRows(analysis, kind) {
+  return getRisks(analysis)
+    .filter((risk) => risk.kind === kind)
+    .map((risk) => ({
+      title: risk.fileId?.replace(/^file:/, '') || 'Unknown file',
+      detail: risk.message || kind,
+      value: risk.severity || 'Detected',
+      color: risk.severity === 'high' ? THEME.red : THEME.amber,
+    }))
+}
+
 function drawGraph(pdf, analysis) {
   pdf.addPage()
   pdf.heading('Repository Graph Atlas', 1)
-  pdf.paragraph('A static intelligence map of the most important files and their strongest repository relationships. Cyan and blue links represent dependency-heavy paths; muted links preserve structural context.', MARGIN, 92, 9)
+  pdf.paragraph('A static map generated only from repository graph nodes and edges collected by the scanner. No semantic edges are invented in this report.', MARGIN, 92, 9)
   const x = MARGIN
   const y = pdf.y
   const width = PAGE_WIDTH - MARGIN * 2
@@ -334,15 +555,22 @@ function drawGraph(pdf, analysis) {
   })
 
   pdf.y += height + 16
-  pdf.paragraph(`Snapshot coverage: ${nodes.length} priority file nodes and ${edges.length} dependency or semantic links. Node size follows repository importance and detected risk weight.`, MARGIN, 92, 9, THEME.muted)
+  pdf.paragraph(`Snapshot coverage: ${nodes.length} priority file nodes and ${edges.length} scanner-provided links. Node size follows scanner importance and detected risk weight.`, MARGIN, 92, 9, THEME.muted)
+
+  const graphStats = buildGraphStats(analysis)
+  drawRankedList(pdf, 'Most Connected Files', graphStats.mostConnected, 'degree')
+  drawRankedList(pdf, 'Highest Fan-In', graphStats.fanIn, 'in')
+  drawRankedList(pdf, 'Highest Fan-Out', graphStats.fanOut, 'out')
+  drawRankedList(pdf, 'Highest Dependency Files', graphStats.dependencyHeavy, 'dependencyOut')
 }
 
 function drawLanguageInsights(pdf, analysis) {
   pdf.addPage()
   pdf.heading('Language Intelligence', 1)
-  pdf.paragraph('Language composition shows where implementation effort is concentrated. The chart and bars use file counts so the view remains comparable across repositories.', MARGIN, 92, 9)
+  pdf.paragraph('Language composition is computed from scanner file records after ignored directories have already been excluded by repository analysis. LOC, comment lines, blank lines, and source lines are not displayed unless verified in the analysis payload.', MARGIN, 92, 9)
   const languages = getLanguageBreakdown(analysis).slice(0, 10)
   const total = languages.reduce((sum, item) => sum + (Number(item.count) || 0), 0) || 1
+  const totalBytes = languages.reduce((sum, item) => sum + (Number(item.bytes) || 0), 0) || 1
   const donutValues = languages.map((item, index) => ({ value: item.count, color: CHART_COLORS[index % CHART_COLORS.length] }))
   pdf.rect(MARGIN, pdf.y, 220, 240, THEME.panel, THEME.border)
   pdf.donut(donutValues, MARGIN + 110, pdf.y + 116, 76, 40)
@@ -359,10 +587,22 @@ function drawLanguageInsights(pdf, analysis) {
     pdf.bar(legendX, rowY + 14, 225, 7, item.count / maxCount, color)
   })
   pdf.y += 286
+  pdf.heading('Verified Language Table', 2)
+  drawTable(pdf, ['Language', 'File %', 'Files', 'Bytes', 'LOC', 'Comments', 'Blank', 'Source'], languages.slice(0, 12).map((item) => [
+    LANGUAGE_LABELS[item.language] || item.language || 'unknown',
+    formatPercent((item.count / total) * 100),
+    String(item.count),
+    formatBytes(item.bytes),
+    'Unable to Verify',
+    'Unable to Verify',
+    'Unable to Verify',
+    'Unable to Verify',
+  ]), [96, 54, 38, 64, 62, 68, 52, 62])
   pdf.heading('Composition Signals', 2)
   const lead = languages[0]
   const second = languages[1]
-  pdf.paragraph(`Primary language: ${LANGUAGE_LABELS[lead?.language] || lead?.language || 'unknown'} with ${lead?.count || 0} files. ${second ? `Secondary concentration: ${LANGUAGE_LABELS[second.language] || second.language} with ${second.count} files.` : ''} The repository uses ${languages.length} detected language groups in this report.`, MARGIN, 92, 10, THEME.text)
+  const inventory = buildInventory(analysis)
+  pdf.paragraph(`Largest language by file count: ${LANGUAGE_LABELS[lead?.language] || lead?.language || 'Not Detected'} (${lead?.count || 0} files, ${formatBytes(lead?.bytes || 0)}). ${second ? `Second largest: ${LANGUAGE_LABELS[second.language] || second.language} (${second.count} files).` : ''} Generated code: ${formatPercent(inventory.generatedPercent)}. Test code: ${formatPercent(inventory.testPercent)}. Documentation: ${formatPercent(inventory.documentationPercent)}. Byte share for all languages totals ${formatBytes(totalBytes)}.`, MARGIN, 92, 10, THEME.text)
 }
 
 function drawArchitectureOverview(pdf, analysis) {
@@ -370,12 +610,12 @@ function drawArchitectureOverview(pdf, analysis) {
   pdf.heading('Architecture Overview', 1)
   const arch = analysis?.architecture?.summary || analysis?.summary?.architecture || {}
 
-  pdf.paragraph(analysis?.summary?.architecture?.overview || analysis?.summary?.narrative || 'Architecture intelligence is generated from repository files, semantic links, detected layers, and pipeline risks.', MARGIN, 92, 9)
+  pdf.paragraph('Architecture is reported only from scanner-detected file roles, layers, imports, and semantic edges. Domain modules such as auth, payment, cache, or database appear only when matching files or roles exist in the analyzed repository.', MARGIN, 92, 9)
 
   const cardW = (PAGE_WIDTH - MARGIN * 2 - 24) / 3
   pdf.metricCard('Architecture nodes', String(arch.nodeCount || analysis?.graph?.nodes?.length || 0), MARGIN, pdf.y, cardW)
   pdf.metricCard('Dead code', String(arch.deadCodeCount || 0), MARGIN + cardW + 12, pdf.y, cardW)
-  pdf.metricCard('Broken paths', String(arch.brokenPipelineCount || 0), MARGIN + (cardW + 12) * 2, pdf.y, cardW)
+  pdf.metricCard('Broken signals', String(arch.brokenPipelineCount || 0), MARGIN + (cardW + 12) * 2, pdf.y, cardW)
   pdf.y += 76
 
   pdf.heading('Layer Distribution', 2)
@@ -395,8 +635,18 @@ function drawArchitectureOverview(pdf, analysis) {
   }
 
   pdf.y += 8
+  pdf.heading('Detected Architecture Roles', 2)
+  const roleRows = Object.entries(arch.layerSummary || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([layer, count]) => [CATEGORY_LABELS[layer] || layer, String(count), 'Detected from file paths, imports, and scanner role inference'])
+  drawTable(pdf, ['Role / Layer', 'Files', 'Evidence'], roleRows.slice(0, 12), [130, 50, 312])
+
   pdf.heading('System Path Diagram', 2)
   const pathLayers = layerEntries.slice(0, 5)
+  if (!pathLayers.length) {
+    pdf.paragraph('Insufficient Evidence: no scanner layer distribution was available.', MARGIN, 92, 9)
+    return
+  }
   const boxW = 88
   const gap = 14
   pathLayers.forEach(([layer, count], index) => {
@@ -410,15 +660,35 @@ function drawArchitectureOverview(pdf, analysis) {
   })
 }
 
-function drawArchitectureFlow(pdf, analysis, activeArchitectureFlow) {
+function drawDependencyGraph(pdf, analysis, activeArchitectureFlow) {
   pdf.addPage()
-  pdf.heading('Architecture Flow Map', 1)
+  pdf.heading('Architecture Flow Evidence', 1)
   const flows = analysis?.flows?.available || []
-  const selectedFlow = activeArchitectureFlow || flows[0]
+  const orderedFlows = activeArchitectureFlow
+    ? [activeArchitectureFlow, ...flows.filter((flow) => flow.id !== activeArchitectureFlow.id)]
+    : flows
 
-  if (selectedFlow) {
-    pdf.paragraph(`${selectedFlow.label || selectedFlow.type || 'Architecture Flow'} - ${selectedFlow.summary || `${selectedFlow.nodes?.length || 0} nodes across ${selectedFlow.layers?.length || 0} layers.`}`, MARGIN, 92, 10, THEME.text)
-    ;(selectedFlow.stages || []).slice(0, 12).forEach((stage, index) => {
+  if (orderedFlows.length) {
+    pdf.paragraph('Only flows emitted by the repository analyzer are included. Missing authentication, payment, cache, queue, API, or framework flows are intentionally omitted instead of inferred.', MARGIN, 92, 9, THEME.text)
+    orderedFlows.slice(0, 8).forEach((flow, flowIndex) => {
+      pdf.ensureSpace(126)
+      if (flowIndex > 0) pdf.y += 8
+      pdf.heading(flow.label || flow.type || 'Architecture Flow', 2)
+      drawTable(pdf, ['Signal', 'Value'], [
+        ['Confidence', flow.confidence != null ? `${flow.confidence}%` : 'Unable to Verify'],
+        ['Entry Point', flow.entryPoint?.path || flow.stages?.[0]?.path || 'Unable to Verify'],
+        ['Exit Point', flow.exitPoint?.path || flow.stages?.[flow.stages.length - 1]?.path || 'Unable to Verify'],
+        ['Framework', flow.framework || 'Unable to Verify'],
+        ['Verification', asArray(flow.verification).join(', ') || 'Insufficient Evidence'],
+      ], [120, 372])
+      pdf.paragraph(flow.explanation || flow.summary || 'Insufficient Evidence: explanation unavailable.', MARGIN, 92, 9, THEME.muted)
+
+      const evidenceText = asArray(flow.evidence).slice(0, 8).join(' / ') || 'Insufficient Evidence'
+      pdf.paragraph(`Evidence: ${evidenceText}`, MARGIN, 92, 8, THEME.cyan)
+      pdf.paragraph(`Source files: ${asArray(flow.sourceFiles).slice(0, 8).join(' / ') || 'Unable to Verify'}`, MARGIN, 92, 8, THEME.muted)
+
+      pdf.heading('Execution Sequence', 3)
+      ;(flow.stages || []).slice(0, 10).forEach((stage, index) => {
       pdf.ensureSpace(55)
       const color = CATEGORY_COLORS[stage.layer] || CHART_COLORS[index % CHART_COLORS.length]
       const nodeY = pdf.y
@@ -426,21 +696,127 @@ function drawArchitectureFlow(pdf, analysis, activeArchitectureFlow) {
       pdf.text(String(index + 1), MARGIN + 14, nodeY + 21, 8, THEME.bg, 'F2')
       pdf.rect(MARGIN + 42, nodeY, PAGE_WIDTH - MARGIN * 2 - 42, 40, THEME.panel, THEME.border)
       pdf.text(stage.label || stage.nodeId, MARGIN + 54, nodeY + 16, 9, THEME.text, 'F2')
-      pdf.text(`${CATEGORY_LABELS[stage.layer] || stage.layer || 'layer'} / ${stage.path || ''}`, MARGIN + 54, nodeY + 30, 7, color, 'F3')
-      if (index < Math.min(11, (selectedFlow.stages || []).length - 1)) pdf.line(MARGIN + 18, nodeY + 30, MARGIN + 18, nodeY + 52, THEME.cyan, 1)
+        pdf.text(`${CATEGORY_LABELS[stage.layer] || stage.layer || 'layer'} / ${stage.path || ''}${stage.lineNumber ? ` / line ${stage.lineNumber}` : ''}`, MARGIN + 54, nodeY + 30, 7, color, 'F3')
+        if (index < Math.min(9, (flow.stages || []).length - 1)) pdf.line(MARGIN + 18, nodeY + 30, MARGIN + 18, nodeY + 52, THEME.cyan, 1)
       pdf.y += 53
     })
+    })
   } else {
-    pdf.paragraph('No architecture flow metadata available.', MARGIN, 90, 10)
+    pdf.paragraph('Flow Not Detected: no architecture flow had enough source-code evidence to verify a real execution path.', MARGIN, 90, 10)
   }
+}
+
+function drawApiReport(pdf, analysis) {
+  pdf.addPage()
+  pdf.heading('API Report', 1)
+  const apiFlow = asArray(analysis?.flows?.available).find((flow) => flow.id === 'api')
+  const apiStages = asArray(apiFlow?.stages)
+  if (!apiStages.length) {
+    pdf.paragraph('No API Endpoints Detected', MARGIN, 92, 11, THEME.text)
+    pdf.paragraph('Endpoint-level method, route, handler, middleware, validation, and source line data are not present in the current repository analysis payload. The report does not infer endpoint counts from file names.', MARGIN, 92, 9, THEME.muted)
+    return
+  }
+
+  pdf.paragraph('The scanner detected API-related files or call paths. Endpoint-level route tables are shown only when concrete route metadata is present in the analysis payload.', MARGIN, 92, 9)
+  drawTable(pdf, ['HTTP Method', 'Route', 'Handler', 'Source File', 'Middleware', 'Validation', 'Confidence'], apiStages.slice(0, 16).map((stage) => [
+    'Unable to Verify',
+    'Unable to Verify',
+    stage.label || 'Unable to Verify',
+    stage.path || 'Unable to Verify',
+    'Unable to Verify',
+    'Unable to Verify',
+    'Medium: API role detected, endpoint details unavailable',
+  ]), [58, 70, 78, 130, 70, 70, 116])
+}
+
+function drawExecutiveSummary(pdf, analysis) {
+  pdf.addPage()
+  pdf.heading('Executive Summary', 1)
+  const summary = analysis?.summary || {}
+  pdf.paragraph(summary.description || summary.narrative || 'Insufficient Evidence: no README or manifest-derived description was available in the analysis payload.', MARGIN, 92, 10, THEME.text)
+
+  const evidenceRows = [
+    ['Repository purpose', summary.description ? 'README / manifest-derived description available' : 'Unable to Verify'],
+    ['Primary source of truth', 'scanner analysis payload'],
+    ['Architecture confidence', analysis?.architecture?.summary ? 'Architecture scanner summary available' : 'Insufficient Evidence'],
+    ['Graph confidence', analysis?.graph?.edges?.length ? 'Import and semantic graph edges available' : 'Insufficient Evidence'],
+    ['Commit confidence', 'Commit analytics require fetched git history sample'],
+  ]
+  drawTable(pdf, ['Signal', 'Evidence'], evidenceRows, [170, 322])
+}
+
+function drawRepositoryStatistics(pdf, analysis, commitHistory) {
+  pdf.addPage()
+  pdf.heading('Repository Statistics', 1)
+  const inventory = buildInventory(analysis)
+  const graph = analysis?.graph || { nodes: [], edges: [] }
+  const dependencyEdges = asArray(graph.edges).filter((edge) => edge.type === 'dependency').length
+  const semanticEdges = asArray(graph.edges).filter((edge) => edge.type && edge.type !== 'dependency' && edge.type !== 'hierarchy').length
+  const cardW = (PAGE_WIDTH - MARGIN * 2 - 24) / 3
+
+  pdf.metricCard('Files', String(inventory.fileCount), MARGIN, pdf.y, cardW)
+  pdf.metricCard('Folders', String(inventory.folderCount), MARGIN + cardW + 12, pdf.y, cardW)
+  pdf.metricCard('Languages', String(inventory.languages.length), MARGIN + (cardW + 12) * 2, pdf.y, cardW)
+  pdf.y += 68
+  pdf.metricCard('Graph nodes', String(asArray(graph.nodes).length), MARGIN, pdf.y, cardW)
+  pdf.metricCard('Graph edges', String(asArray(graph.edges).length), MARGIN + cardW + 12, pdf.y, cardW)
+  pdf.metricCard('Commits', String(commitHistory?.commits?.length || 0), MARGIN + (cardW + 12) * 2, pdf.y, cardW)
+  pdf.y += 76
+
+  drawTable(pdf, ['Metric', 'Value', 'Evidence'], [
+    ['Dependency edges', String(dependencyEdges), 'scanner graph edge type'],
+    ['Semantic edges', String(semanticEdges), 'architecture scanner semantic edges'],
+    ['External dependencies', String(inventory.packages.length), 'manifest dependency sections'],
+    ['Code size', formatBytes(inventory.totalSize), 'filesystem stat captured by scanner'],
+    ['Largest file', inventory.largestFiles[0]?.path || 'Not Detected', inventory.largestFiles[0] ? formatBytes(inventory.largestFiles[0].size || 0) : 'No file inventory'],
+    ['Largest language', inventory.languages[0]?.language ? (LANGUAGE_LABELS[inventory.languages[0].language] || inventory.languages[0].language) : 'Not Detected', 'grouped from scanner language tags'],
+  ], [160, 160, 172])
+}
+
+function drawDeadCodeReport(pdf, analysis) {
+  pdf.addPage()
+  pdf.heading('Dead Code Report', 1)
+  const deadRows = riskRows(analysis, 'dead-code')
+  if (!deadRows.length) {
+    pdf.paragraph('No dead code entries were verified by the current scanner output.', MARGIN, 92, 10, THEME.emerald)
+    pdf.paragraph('The report does not mark code as dead unless the analyzer emits a dead-code risk based on graph isolation evidence.', MARGIN, 92, 9)
+    return
+  }
+  pdf.paragraph('Dead-code entries below are scanner risk records. Function/class names and line numbers are marked unavailable when not included in the analysis payload.', MARGIN, 92, 9)
+  drawTable(pdf, ['File', 'Function/Class', 'Line', 'Reason', 'Confidence', 'References'], deadRows.map((row) => [
+    row.title,
+    'Unable to Verify',
+    'Unable to Verify',
+    row.detail,
+    row.value === 'high' ? 'High' : 'Medium',
+    'Graph isolation evidence',
+  ]), [132, 76, 42, 132, 58, 92])
+}
+
+function drawBrokenImportReport(pdf, analysis) {
+  pdf.addPage()
+  pdf.heading('Broken Import Report', 1)
+  const brokenRows = riskRows(analysis, 'unresolved-import')
+  if (!brokenRows.length) {
+    pdf.paragraph('No unresolved relative imports were detected in the current scanner output.', MARGIN, 92, 10, THEME.emerald)
+    return
+  }
+  drawTable(pdf, ['File', 'Line', 'Missing Module', 'Import Statement', 'Reason', 'Suggested Fix'], brokenRows.map((row) => [
+    row.title,
+    'Unable to Verify',
+    row.detail.replace(/^Unresolved module:\s*/i, ''),
+    'Unable to Verify',
+    row.detail,
+    'Verify path, extension, alias config, or missing file',
+  ]), [126, 38, 86, 104, 120, 118])
 }
 
 function drawCommits(pdf, commitHistory) {
   pdf.addPage()
-  pdf.heading('Commit Intelligence', 1)
+  pdf.heading('Git Analytics', 1)
 
   if (!commitHistory?.commits?.length) {
-    pdf.paragraph('Commit history was not available for this report.', MARGIN, 90, 10)
+    pdf.paragraph('Unable to Verify: commit history was not available for this report.', MARGIN, 90, 10)
     return
   }
 
@@ -448,12 +824,17 @@ function drawCommits(pdf, commitHistory) {
   const authors = commitHistory.authors || []
   const files = commitHistory.files || []
   const totalFilesChanged = commits.reduce((sum, commit) => sum + (commit.filesChanged || 0), 0)
+  const fileChurn = new Map()
+  commits.forEach((commit) => {
+    asArray(commit.changedFiles).forEach((filePath) => fileChurn.set(filePath, (fileChurn.get(filePath) || 0) + 1))
+  })
+  const churnRows = [...fileChurn.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
   const cardW = (PAGE_WIDTH - MARGIN * 2 - 24) / 3
   pdf.metricCard('Commits', String(commits.length), MARGIN, pdf.y, cardW)
   pdf.metricCard('Authors', String(authors.length), MARGIN + cardW + 12, pdf.y, cardW)
   pdf.metricCard('Changed files', String(files.length), MARGIN + (cardW + 12) * 2, pdf.y, cardW)
   pdf.y += 68
-  pdf.paragraph(`Analytics are generated from the latest ${commits.length} commits. The graph contains ${totalFilesChanged} file-change events across ${authors.length} contributors.`, MARGIN, 92, 10)
+  pdf.paragraph(`Analytics are generated from the latest ${commits.length} commits returned by git log. The report observed ${totalFilesChanged} file-change events across ${authors.length} contributors. Bus factor and ownership are reported only from this commit sample.`, MARGIN, 92, 10)
 
   pdf.heading('Change Intensity', 2)
   const recent = commits.slice(0, 24).reverse()
@@ -480,6 +861,13 @@ function drawCommits(pdf, commitHistory) {
     pdf.y += 24
   })
 
+  pdf.heading('Most Changed Files', 2)
+  drawTable(pdf, ['File', 'Commits Touching File', 'Evidence'], churnRows.map(([filePath, count]) => [
+    filePath,
+    String(count),
+    `Observed in latest ${commits.length} commits`,
+  ]), [260, 90, 150])
+
   pdf.addPage()
   pdf.heading('Recent Commit Timeline', 1)
   commits.slice(0, 18).forEach((commit, index) => {
@@ -496,15 +884,25 @@ function drawCommits(pdf, commitHistory) {
 function drawStats(pdf, analysis) {
   pdf.addPage()
   pdf.heading('Repository Inventory', 1)
-  const files = analysis?.files || []
-  const totalSize = files.reduce((sum, file) => sum + (file.size || 0), 0)
-  const languages = getLanguageBreakdown(analysis)
+  const inventory = buildInventory(analysis)
+  const files = inventory.files
+  const languages = inventory.languages
 
-  pdf.metricCard('Folders', String(analysis?.summary?.folderCount || 0), MARGIN, pdf.y, 112)
-  pdf.metricCard('Files', String(analysis?.summary?.fileCount || files.length), MARGIN + 124, pdf.y, 112)
+  pdf.metricCard('Folders', String(inventory.folderCount), MARGIN, pdf.y, 112)
+  pdf.metricCard('Files', String(inventory.fileCount), MARGIN + 124, pdf.y, 112)
   pdf.metricCard('Languages', String(languages.length), MARGIN + 248, pdf.y, 112)
-  pdf.metricCard('Code size', formatBytes(totalSize), MARGIN + 372, pdf.y, 112)
+  pdf.metricCard('Code size', formatBytes(inventory.totalSize), MARGIN + 372, pdf.y, 112)
   pdf.y += 70
+
+  drawTable(pdf, ['Category', 'Count', 'Evidence'], [
+    ['Packages', String(inventory.packages.length), 'package.json dependency sections collected by scanner'],
+    ['Modules / graph nodes', String(asArray(analysis?.graph?.nodes).filter((node) => node.type !== 'folder').length), 'scanner graph file nodes'],
+    ['Assets', String(inventory.assets.length), 'path extension classification'],
+    ['Configuration files', String(inventory.configs.length), 'path/name classification'],
+    ['Documentation files', String(inventory.docs.length), 'path/name classification'],
+    ['Test files', String(inventory.tests.length), 'path/name classification'],
+    ['Generated files', String(inventory.generated.length), 'path/name classification'],
+  ], [160, 64, 268])
 
   pdf.heading('Folder Distribution', 2)
   const folders = (analysis?.summary?.topFolders || []).slice(0, 14)
@@ -520,9 +918,10 @@ function drawStats(pdf, analysis) {
   })
 
   pdf.addPage()
-  pdf.heading('Important Files and Hotspots', 1)
+  pdf.heading('Hotspots', 1)
   const importantFiles = (analysis?.summary?.importantFiles || []).slice(0, 20)
   const maxScore = Math.max(1, ...importantFiles.map((file) => file.score || 1))
+  pdf.paragraph('Hotspots combine scanner importance scores, graph connectivity, file size, and available commit churn. No complexity score is displayed unless measured by the analyzer.', MARGIN, 92, 9)
   importantFiles.forEach((file, index) => {
     pdf.ensureSpace(34)
     const color = CHART_COLORS[index % CHART_COLORS.length]
@@ -532,21 +931,52 @@ function drawStats(pdf, analysis) {
     pdf.text(String(file.score || ''), PAGE_WIDTH - MARGIN - 24, pdf.y + 14, 7, THEME.muted, 'F2')
     pdf.y += 32
   })
+
+  pdf.heading('Largest Files', 2)
+  drawTable(pdf, ['File', 'Size', 'Evidence'], inventory.largestFiles.map((file) => [
+    file.path,
+    formatBytes(file.size || 0),
+    'filesystem stat captured during scan',
+  ]), [300, 70, 120])
+}
+
+function drawQualityDashboard(pdf, analysis) {
+  pdf.addPage()
+  pdf.heading('Quality Dashboard', 1)
+  const arch = analysis?.architecture?.summary || analysis?.summary?.architecture || {}
+  const qualityRows = [
+    ['Dead Code', arch.deadCodeCount ?? 0, 'architecture risk records', 'Medium-High'],
+    ['Broken Imports', arch.unresolvedImportCount ?? 0, 'unresolved relative import records', 'High'],
+    ['Broken Exports', 'Unable to Verify', 'export resolution not exposed in analysis payload', 'Unknown'],
+    ['Circular Dependencies', arch.circularDependencyCount ?? 0, 'architecture cycle risk records', 'High'],
+    ['Unused Dependencies', 'Unable to Verify', 'package usage graph not exposed in analysis payload', 'Unknown'],
+    ['Outdated Dependencies', 'Unable to Verify', 'registry version lookup not performed', 'Unknown'],
+    ['Duplicate Code', 'Unable to Verify', 'token clone analysis not performed', 'Unknown'],
+    ['Large Functions', 'Unable to Verify', 'function AST spans not exposed in analysis payload', 'Unknown'],
+    ['Large Classes', 'Unable to Verify', 'class AST spans not exposed in analysis payload', 'Unknown'],
+    ['Security Warnings', 'Unable to Verify', 'security scanner output not present', 'Unknown'],
+    ['License Issues', 'Unable to Verify', 'license policy scan not present', 'Unknown'],
+    ['Missing Tests', 'Unable to Verify', 'coverage/test mapping not present', 'Unknown'],
+    ['Missing Documentation', 'Unable to Verify', 'symbol documentation scan not present', 'Unknown'],
+  ]
+  drawTable(pdf, ['Metric', 'Value', 'Evidence', 'Severity'], qualityRows, [126, 74, 230, 62])
 }
 
 function drawRiskDashboard(pdf, analysis) {
   pdf.addPage()
-  pdf.heading('Quality and Risk Dashboard', 1)
-  const arch = analysis?.architecture?.summary || analysis?.summary?.architecture || {}
-  const risks = [
-    ['Dead code', arch.deadCodeCount || 0, THEME.red],
-    ['Broken pipelines', arch.brokenPipelineCount || 0, THEME.amber],
-    ['Unresolved imports', arch.unresolvedImportCount || 0, THEME.violet],
-    ['Unmatched APIs', arch.unmatchedApiCount || 0, THEME.pink],
-    ['Circular dependencies', arch.circularDependencyCount || 0, THEME.cyan],
-  ]
-  const maxRisk = Math.max(1, ...risks.map(([, count]) => count))
-  risks.forEach(([label, count, color], index) => {
+  pdf.heading('Risk Dashboard', 1)
+  const risks = getRisks(analysis)
+  const grouped = new Map()
+  risks.forEach((risk) => grouped.set(risk.kind, (grouped.get(risk.kind) || 0) + 1))
+  const rows = [...grouped.entries()].sort((a, b) => b[1] - a[1])
+  if (!rows.length) {
+    pdf.paragraph('No risk records were emitted by the repository analyzer.', MARGIN, 92, 10, THEME.emerald)
+    pdf.paragraph('This does not prove the repository has no risk; it means the current evidence set did not contain reportable risks.', MARGIN, 92, 9)
+    return
+  }
+  const maxRisk = Math.max(1, ...rows.map(([, count]) => count))
+  rows.slice(0, 9).forEach(([label, count], index) => {
+    const color = label.includes('unresolved') || label.includes('circular') ? THEME.red : CHART_COLORS[index % CHART_COLORS.length]
     const y = pdf.y + index * 68
     pdf.rect(MARGIN, y, PAGE_WIDTH - MARGIN * 2, 52, THEME.panel, THEME.border)
     pdf.rect(MARGIN, y, 5, 52, color, color)
@@ -554,10 +984,49 @@ function drawRiskDashboard(pdf, analysis) {
     pdf.text(String(count), PAGE_WIDTH - MARGIN - 34, y + 22, 18, THEME.text, 'F2')
     pdf.bar(MARGIN + 18, y + 33, 380, 6, count / maxRisk, color)
   })
-  pdf.y += risks.length * 68 + 18
-  pdf.heading('Interpretation', 2)
-  const totalRisk = risks.reduce((sum, [, count]) => sum + count, 0)
-  pdf.paragraph(totalRisk ? `The analysis detected ${totalRisk} architecture-level risk signals. Review red and amber categories first, then validate imports, API contracts, and dependency cycles.` : 'No architecture-level risk signals were detected in the current scan. Continue validating runtime behavior with tests and production telemetry.', MARGIN, 92, 10, totalRisk ? THEME.amber : THEME.emerald)
+  pdf.y += Math.min(rows.length, 9) * 68 + 18
+  drawEvidenceList(pdf, 'Risk Evidence', risks.map((risk) => ({
+    title: risk.kind || 'risk',
+    detail: `${risk.fileId?.replace(/^file:/, '') || 'Unknown file'} - ${risk.message || 'No message'}`,
+    value: risk.severity || 'Detected',
+    color: risk.severity === 'high' ? THEME.red : THEME.amber,
+  })), 'No risk records available.')
+}
+
+function drawPipelineReport(pdf, analysis) {
+  pdf.addPage()
+  pdf.heading('Pipeline Report', 1)
+  const files = asArray(analysis?.files)
+  const pipelinePatterns = [
+    { label: 'GitHub Actions', pattern: /(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/i },
+    { label: 'GitLab CI', pattern: /(^|\/)\.gitlab-ci\.ya?ml$/i },
+    { label: 'Azure DevOps', pattern: /(^|\/)azure-pipelines\.ya?ml$/i },
+    { label: 'Jenkins', pattern: /(^|\/)jenkinsfile$/i },
+    { label: 'CircleCI', pattern: /(^|\/)\.circleci\/config\.ya?ml$/i },
+    { label: 'Bitbucket Pipelines', pattern: /(^|\/)bitbucket-pipelines\.ya?ml$/i },
+    { label: 'Drone', pattern: /(^|\/)\.drone\.ya?ml$/i },
+    { label: 'Tekton', pattern: /(^|\/)(tekton|\.tekton)\//i },
+    { label: 'Argo', pattern: /(^|\/)(argo|argocd|\.argo)\//i },
+  ]
+  const detected = []
+  for (const file of files) {
+    const filePath = getPath(file)
+    const match = pipelinePatterns.find((item) => item.pattern.test(filePath))
+    if (match) detected.push({ provider: match.label, filePath })
+  }
+
+  if (!detected.length) {
+    pdf.paragraph('No CI/CD Pipeline Detected', MARGIN, 92, 11, THEME.text)
+    pdf.paragraph('This is based only on pipeline configuration file paths present in the scanner file inventory. The report does not infer pipeline usage from README text or repository naming.', MARGIN, 92, 9)
+    return
+  }
+
+  drawTable(pdf, ['Pipeline', 'Source File', 'Evidence', 'Confidence'], detected.map((item) => [
+    item.provider,
+    item.filePath,
+    'known CI/CD config path detected',
+    'High',
+  ]), [110, 220, 122, 60])
 }
 
 function drawAppendix(pdf, analysis, commitHistory) {
@@ -584,7 +1053,29 @@ function drawAppendix(pdf, analysis, commitHistory) {
   })
   pdf.y += rows.length * 34 + 26
   pdf.heading('Report Scope', 2)
-  pdf.paragraph('This document is a static snapshot generated from Aliya AI repository analysis. Interactive node inspection, live graph navigation, AI summaries, and filtering remain available inside the application.', MARGIN, 92, 9, THEME.muted)
+  pdf.paragraph('This document is a static snapshot generated from Aliya AI repository analysis. It deliberately avoids fabricated metrics. Values not present in the scanner payload are marked Unable to Verify, Not Detected, Insufficient Evidence, or Needs Manual Review.', MARGIN, 92, 9, THEME.muted)
+
+  pdf.heading('Methodology', 2)
+  drawTable(pdf, ['Area', 'Method', 'Confidence Rule'], [
+    ['Language', 'scanner file inventory grouped by language', 'High for file count and bytes; LOC unavailable'],
+    ['Graph Atlas', 'scanner graph nodes and edges', 'High for listed nodes/edges'],
+    ['Architecture', 'scanner role/layer/risk summary', 'Medium unless source evidence is explicitly listed'],
+    ['API', 'API flow metadata when present', 'No endpoint counts inferred without route metadata'],
+    ['Dead Code', 'architecture risk records only', 'No function/class dead-code claims without analyzer evidence'],
+    ['Broken Imports', 'unresolved relative import risk records', 'Line/import statement unavailable unless scanner exposes it'],
+    ['Git', 'latest git log sample fetched by backend', 'Limited to requested commit sample'],
+    ['Pipeline', 'known CI/CD config path detection', 'High for config presence, not runtime behavior'],
+  ], [90, 230, 172])
+
+  pdf.heading('Confidence Scores', 2)
+  drawTable(pdf, ['Signal', 'Confidence', 'Reason'], [
+    ['Repository inventory', 'High', 'filesystem metadata from scanner'],
+    ['Language file share', 'High', 'language tags from scanner file records'],
+    ['Language LOC', 'Unable to Verify', 'line counts are not included in current payload'],
+    ['Graph fan-in / fan-out', 'High', 'computed from scanner graph edges'],
+    ['Endpoint route table', 'Unable to Verify', 'route metadata is not exposed in PDF input'],
+    ['Security warnings', 'Unable to Verify', 'security scanner output is not present'],
+  ], [150, 90, 252])
 }
 
 export function generateRepositoryPdfReport({ analysis, commitHistory, activeArchitectureFlow }) {
@@ -593,11 +1084,12 @@ export function generateRepositoryPdfReport({ analysis, commitHistory, activeArc
   const pdf = new PdfReport(`${analysis.repoName || 'Repository'} Report`)
   const languages = getLanguageBreakdown(analysis)
   const graph = analysis.graph || { nodes: [], edges: [] }
+  const inventory = buildInventory(analysis)
 
   pdf.text('REPOSITORY INTELLIGENCE REPORT', MARGIN, 92, 9, THEME.cyan, 'F2')
   pdf.text(analysis.repoName || 'Repository', MARGIN, 134, 30, THEME.text, 'F2')
   pdf.y = 164
-  pdf.paragraph(analysis.summary?.description || analysis.summary?.narrative || analysis.repoUrl || 'Repository analysis report.', MARGIN, 76, 11, THEME.muted, 17)
+  pdf.paragraph(analysis.summary?.description || analysis.summary?.narrative || analysis.repoUrl || 'Repository analysis report. Unsupported metrics are explicitly marked instead of inferred.', MARGIN, 76, 11, THEME.muted, 17)
   pdf.rect(MARGIN, 230, PAGE_WIDTH - MARGIN * 2, 4, THEME.cyan, THEME.cyan)
   pdf.y = 270
 
@@ -606,13 +1098,13 @@ export function generateRepositoryPdfReport({ analysis, commitHistory, activeArc
   pdf.metricCard('Graph edges', String(graph.edges?.length || 0), MARGIN + cardW + 12, pdf.y, cardW)
   pdf.metricCard('Languages', String(languages.length), MARGIN + (cardW + 12) * 2, pdf.y, cardW)
   pdf.y += 68
-  pdf.metricCard('Folders', String(analysis.summary?.folderCount || 0), MARGIN, pdf.y, cardW)
-  pdf.metricCard('Files', String(analysis.summary?.fileCount || analysis.files?.length || 0), MARGIN + cardW + 12, pdf.y, cardW)
+  pdf.metricCard('Folders', String(inventory.folderCount), MARGIN, pdf.y, cardW)
+  pdf.metricCard('Files', String(inventory.fileCount), MARGIN + cardW + 12, pdf.y, cardW)
   pdf.metricCard('Commits', String(commitHistory?.commits?.length || 0), MARGIN + (cardW + 12) * 2, pdf.y, cardW)
   pdf.y += 78
 
-  pdf.heading('Executive Summary', 2)
-  pdf.paragraph(analysis.summary?.narrative || 'No narrative summary available.', MARGIN, 92, 10, THEME.text)
+  pdf.heading('Evidence Standard', 2)
+  pdf.paragraph('Every displayed number is derived from the repository analysis payload, graph edges, file inventory, manifest dependencies, or fetched git history. Missing evidence is shown as Not Detected, Unable to Verify, Insufficient Evidence, or Needs Manual Review.', MARGIN, 92, 9, THEME.text)
 
   const coverDonut = languages.slice(0, 6).map((item, index) => ({ value: item.count, color: CHART_COLORS[index] }))
   if (coverDonut.length) {
@@ -620,12 +1112,19 @@ export function generateRepositoryPdfReport({ analysis, commitHistory, activeArc
     pdf.text('MIX', PAGE_WIDTH - MARGIN - 72, 694, 8, THEME.text, 'F2')
   }
 
-  drawGraph(pdf, analysis)
+  drawExecutiveSummary(pdf, analysis)
+  drawRepositoryStatistics(pdf, analysis, commitHistory)
   drawLanguageInsights(pdf, analysis)
+  drawGraph(pdf, analysis)
   drawArchitectureOverview(pdf, analysis)
-  drawArchitectureFlow(pdf, analysis, activeArchitectureFlow)
+  drawDependencyGraph(pdf, analysis, activeArchitectureFlow)
+  drawApiReport(pdf, analysis)
+  drawDeadCodeReport(pdf, analysis)
+  drawBrokenImportReport(pdf, analysis)
+  drawPipelineReport(pdf, analysis)
   drawCommits(pdf, commitHistory)
   drawStats(pdf, analysis)
+  drawQualityDashboard(pdf, analysis)
   drawRiskDashboard(pdf, analysis)
   drawAppendix(pdf, analysis, commitHistory)
 

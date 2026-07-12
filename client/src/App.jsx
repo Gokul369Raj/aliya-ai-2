@@ -1,6 +1,6 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import Editor from '@monaco-editor/react'
-import { Sparkles, FolderSearch, LoaderCircle, Settings2, Code2, Network, X, Filter, ChevronDown, ChevronLeft, ChevronRight, Search, Plus, Minus, Copy, Trash2, Maximize, Minimize, Clock3, GitBranch, ArrowRight, ShieldCheck, Zap, FileText } from 'lucide-react'
+import { Sparkles, LoaderCircle, Settings2, Code2, Network, X, Filter, ChevronDown, ChevronLeft, ChevronRight, Search, Plus, Minus, Copy, Trash2, Maximize, Minimize, Clock3, GitBranch, ArrowRight, ShieldCheck, Zap, FileText } from 'lucide-react'
 
 import {
   askRepositoryQuestion,
@@ -20,6 +20,7 @@ import { RunFlowchart } from './components/RunFlowchart'
 import { FileSummaryPanel } from './components/FileSummaryPanel'
 import { FlowExplorerPanel } from './components/FlowExplorerPanel'
 import { LayeredFlowView } from './components/LayeredFlowView'
+import { AliyaMascot3D } from './components/AliyaMascot3D'
 import { downloadBlob, generateRepositoryPdfReport } from './utils/pdfReport'
 import { buildVisibleGraph, formatBytes, phaseLabel, LANGUAGE_COLORS, LANGUAGE_LABELS, getNodeLanguageLabel, CATEGORY_COLORS, CATEGORY_LABELS, getNodeCategoryLabel, getNodeCategoryColor } from './graph-utils'
 import './App.css'
@@ -149,6 +150,141 @@ const Logo = ({ large = false }) => (
     </span>
   </div>
 );
+
+function cleanDiagramLabel(value = '') {
+  return String(value)
+    .replace(/^\s*[A-Za-z0-9_]+\s*/, '')
+    .replace(/[\[\]{}()"']/g, '')
+    .replace(/\|.*?\|/g, '')
+    .replace(/:/g, '')
+    .trim()
+    .slice(0, 42) || 'Step'
+}
+
+function parseMermaidFlow(code = '') {
+  return code
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.includes('-->'))
+    .slice(0, 6)
+    .map((line) => {
+      const [source, target] = line.split(/-->|---/).map(cleanDiagramLabel)
+      return { source, target }
+    })
+    .filter((edge) => edge.source && edge.target)
+}
+
+function DiagramBlock({ code }) {
+  const edges = parseMermaidFlow(code)
+  if (!edges.length) {
+    return <pre className="chat-code-block">{code}</pre>
+  }
+
+  const nodes = []
+  edges.forEach((edge) => {
+    if (!nodes.includes(edge.source)) nodes.push(edge.source)
+    if (!nodes.includes(edge.target)) nodes.push(edge.target)
+  })
+
+  return (
+    <div className="chat-diagram" aria-label="Repository diagram">
+      {nodes.slice(0, 7).map((node, index) => (
+        <div className="chat-diagram-row" key={`${node}-${index}`}>
+          <div className="chat-diagram-node">{node}</div>
+          {index < nodes.length - 1 && <div className="chat-diagram-arrow">↓</div>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function renderInlineMarkdown(text = '') {
+  const parts = String(text).split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean)
+  return parts.map((part, index) => {
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <code key={index}>{part.slice(1, -1)}</code>
+    }
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>
+    }
+    return <span key={index}>{part}</span>
+  })
+}
+
+function ChatMarkdown({ content }) {
+  const blocks = String(content || '').split(/```(\w+)?\n([\s\S]*?)```/g)
+  const rendered = []
+
+  for (let index = 0; index < blocks.length; index += 3) {
+    const text = blocks[index] || ''
+    const language = blocks[index + 1] || ''
+    const code = blocks[index + 2] || ''
+
+    text.split('\n').forEach((line, lineIndex) => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+      if (/^#{1,3}\s+/.test(trimmed)) {
+        rendered.push(<strong className="chat-md-heading" key={`h-${index}-${lineIndex}`}>{trimmed.replace(/^#{1,3}\s+/, '')}</strong>)
+      } else if (/^[-*]\s+/.test(trimmed)) {
+        rendered.push(<div className="chat-md-bullet" key={`b-${index}-${lineIndex}`}>{renderInlineMarkdown(trimmed.replace(/^[-*]\s+/, ''))}</div>)
+      } else {
+        rendered.push(<p key={`p-${index}-${lineIndex}`}>{renderInlineMarkdown(trimmed)}</p>)
+      }
+    })
+
+    if (code) {
+      rendered.push(
+        language.toLowerCase() === 'mermaid'
+          ? <DiagramBlock code={code} key={`d-${index}`} />
+          : <pre className="chat-code-block" key={`c-${index}`}>{code}</pre>,
+      )
+    }
+  }
+
+  return rendered
+}
+
+function buildChatReportFacts(analysis) {
+  if (!analysis) return null
+  const flows = analysis.flows?.available || []
+  return {
+    repo: analysis.repoName,
+    files: analysis.summary?.fileCount ?? 0,
+    graph: `${analysis.graph?.nodes?.length || 0} nodes / ${analysis.graph?.edges?.length || 0} edges`,
+    flows: flows.slice(0, 3).map((flow) => flow.label).join(', ') || 'Not Detected',
+    languages: (analysis.summary?.languageBreakdown || []).slice(0, 3).map((item) => `${LANGUAGE_LABELS[item.language] || item.language} ${item.count}`).join(', ') || 'Unable to Verify',
+  }
+}
+
+function ReportFacts({ facts }) {
+  if (!facts) return null
+  return (
+    <div className="chat-report-facts" aria-label="Report data used">
+      <span>Report data</span>
+      <strong>{facts.repo}</strong>
+      <em>{facts.files} files</em>
+      <em>{facts.graph}</em>
+      <em>Flows: {facts.flows}</em>
+      <em>Languages: {facts.languages}</em>
+    </div>
+  )
+}
+
+function ChatMessage({ message, onCopy }) {
+  return (
+    <div className={`chat-bubble ${message.role}`}>
+      <div className="chat-content-wrap">
+        <div className="chat-content">
+          <ChatMarkdown content={message.content} />
+          {message.role === 'assistant' && <ReportFacts facts={message.reportFacts} />}
+        </div>
+        <button className="chat-copy-btn" onClick={() => onCopy(message.content)} title="Copy message">
+          <Copy size={12} />
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function App() {
   const [repoUrl, setRepoUrl] = useState('')
@@ -484,6 +620,14 @@ function App() {
   }, [analysis, deferredSearch, filterLanguages, filterCategories, filterType, selectedNodeId])
 
   const selectedNode = useMemo(() => analysis?.graph.nodes.find(n => n.id === selectedNodeId) || null, [analysis, selectedNodeId])
+  const architectureFlowCount = useMemo(() => (
+    (analysis?.flows?.available || []).filter((flow) =>
+      Array.isArray(flow.nodes) &&
+      flow.nodes.length > 0 &&
+      Array.isArray(flow.stages) &&
+      flow.stages.length > 0
+    ).length
+  ), [analysis])
 
   useEffect(() => {
     setSummaryClosedNodeId('')
@@ -619,7 +763,7 @@ function App() {
         selectedPath: selectedNode?.type === 'folder' ? '' : selectedNode?.path || '',
         focusedNodeIds: selectedNodeId ? [selectedNodeId, ...(analysis.graph.adjacency[selectedNodeId] || [])] : [],
       })
-      setMessages(current => [...current, { role: 'assistant', content: response.answer }])
+      setMessages(current => [...current, { role: 'assistant', content: response.answer, reportFacts: buildChatReportFacts(analysis) }])
     } catch (e) {
       setError(e.message)
     } finally {
@@ -706,6 +850,12 @@ function App() {
           <div className="landing-grid-pattern"></div>
         </div>
 
+        {!job && (
+          <div className="landing-mascot-stage" aria-label="Aliya AI mascot">
+            <AliyaMascot3D />
+          </div>
+        )}
+
         <header className="landing-navbar">
           <Logo />
           <div className="landing-navbar-status">
@@ -715,15 +865,10 @@ function App() {
         </header>
 
         <main className="landing-content">
-          <div className="landing-eyebrow">
-            <Sparkles size={14} />
-            AI-powered repository intelligence
-          </div>
-
-          <h1>Understand any codebase<br /><span>without the guesswork.</span></h1>
+          <h1>Understand a GitHub repo<br /><span>in minutes.</span></h1>
           <p className="landing-description">
-            Turn a GitHub repository into an interactive architecture graph. Explore dependencies,
-            inspect source files, and understand execution flow in minutes.
+            Paste a repository URL. Aliya AI builds a clean architecture graph, repo-only answers,
+            and report-ready evidence without extra setup.
           </p>
           
           <div className="landing-analysis-center">
@@ -762,12 +907,15 @@ function App() {
               </div>
             ) : (
               <div className="landing-analyze-card">
-              <div className="landing-input-label">
-                <span><GitBranch size={15} /> GitHub repository</span>
-                <small>Public repositories supported</small>
+              <div className="landing-card-header">
+                <div>
+                  <strong>Paste GitHub repository URL</strong>
+                  <span className="landing-card-kicker">Public repositories supported</span>
+                </div>
+                <span className="landing-card-status"><ShieldCheck size={13} /> Local scan</span>
               </div>
               <form className="search-bar large-search" onSubmit={handleAnalyze}>
-                <FolderSearch size={20} className="icon-muted" />
+                <GitBranch size={19} className="icon-muted" />
                 <input
                   value={repoUrl}
                   onChange={(e) => setRepoUrl(e.target.value)}
@@ -775,12 +923,12 @@ function App() {
                   aria-label="GitHub repository URL"
                   autoFocus
                 />
-                <button type="submit" disabled={!repoUrl.trim()}>
-                  Analyze repo <ArrowRight size={16} />
+                <button type="submit" disabled={!repoUrl.trim()} title="Analyze repository" aria-label="Analyze repository">
+                  <ArrowRight size={18} />
                 </button>
               </form>
               <div className="landing-card-footnote">
-                No sign-up required. Repository analysis stays on your machine.
+                Local scan · Verified graph · Short AI answers
               </div>
               </div>
             )}
@@ -802,9 +950,9 @@ function App() {
 
           {!job && (
             <div className="landing-benefits">
-              <div><Network size={17} /><span><strong>Visual architecture</strong><small>Interactive 2D and 3D graphs</small></span></div>
-              <div><Zap size={17} /><span><strong>Instant exploration</strong><small>Navigate files and dependencies</small></span></div>
-              <div><ShieldCheck size={17} /><span><strong>Local and private</strong><small>Your API keys stay in-browser</small></span></div>
+              <div><Network size={16} /><span><strong>Architecture graph</strong></span></div>
+              <div><Zap size={16} /><span><strong>Short repo answers</strong></span></div>
+              <div><ShieldCheck size={16} /><span><strong>Local-first scan</strong></span></div>
             </div>
           )}
         </main>
@@ -1057,12 +1205,16 @@ function App() {
                 <button className={graphScope === 'runflow' ? 'active' : ''} onClick={() => setGraphScope('runflow')}>Run Flow</button>
                 <button
                   className={graphScope === 'architecture' ? 'active architecture-tab' : 'architecture-tab'}
+                  disabled={!analysis || architectureFlowCount === 0}
+                  title={!analysis ? 'Analyze a repository first' : architectureFlowCount === 0 ? 'No verified architecture flow found in this repository' : 'Open verified architecture flows'}
                   onClick={() => {
+                    if (!analysis || architectureFlowCount === 0) return
                     setGraphScope('architecture')
                     setIsFullscreen(true)
                   }}
                 >
                   <Sparkles size={12} /> Architecture
+                  {analysis && <span className="architecture-flow-count">{architectureFlowCount}</span>}
                 </button>
               </div>
               {graphScope === 'repo' ? (
@@ -1309,14 +1461,7 @@ function App() {
               </div>
               <div className="chat-messages" ref={chatMessagesRef}>
                 {messages.map((m, i) => (
-                  <div key={i} className={`chat-bubble ${m.role}`}>
-                    <div className="chat-content-wrap">
-                      <div className="chat-content">{m.content}</div>
-                      <button className="chat-copy-btn" onClick={() => copyMessageContent(m.content)} title="Copy message">
-                        <Copy size={12} />
-                      </button>
-                    </div>
-                  </div>
+                  <ChatMessage key={i} message={m} onCopy={copyMessageContent} />
                 ))}
                 {aiBusy && <div className="chat-bubble assistant"><div className="chat-content"><LoaderCircle className="spin" size={14} /></div></div>}
               </div>
@@ -1353,8 +1498,14 @@ function App() {
             </>
           ) : (
             <div className="chat-collapsed">
-              <button className="open-chat-btn" onClick={() => setIsChatOpen(true)}>
-                Aliya AI
+              <button className="open-chat-btn" onClick={() => setIsChatOpen(true)} title="Open Aliya AI assistant" aria-label="Open Aliya AI assistant">
+                <span className="open-chat-orb" aria-hidden="true">
+                  <span className="assistant-wave-bar" />
+                  <span className="assistant-wave-bar" />
+                  <span className="assistant-wave-bar" />
+                  <span className="assistant-wave-bar" />
+                </span>
+                <span className="open-chat-label">Aliya AI</span>
               </button>
             </div>
           )}

@@ -18,7 +18,7 @@
   "scripts": {
     "start": "node server/index.js",
     "build": "npm run build --prefix client",
-    "dev": "concurrently -k \"ALIYA_SKIP_OPEN=1 NODE_ENV=development PORT=3001 node server/index.js\" \"npm run dev --prefix client\""
+    "dev": "node scripts/dev.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -28,7 +28,7 @@
     "simple-git": "^3.36.0"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1",
+    "concurrently": "^9.2.4",
     "yargs": "^17.7.1"
   }
 }

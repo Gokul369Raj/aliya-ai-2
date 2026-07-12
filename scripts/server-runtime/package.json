@@ -1,0 +1,12 @@
+{
+  "name": "aliya-ai-server-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "open": "^11.0.0",
+    "simple-git": "^3.36.0"
+  }
+}

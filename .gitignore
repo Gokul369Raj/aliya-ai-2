@@ -1,4 +1,6 @@
 node_modules/
+node_modules_corrupt_backup/
+client/package-lock 2.json
 .DS_Store
 output/
 tmp/
