@@ -1,4 +1,4 @@
-export function analyzeFileStatic(path, content, allNodes = []) {
+export function analyzeFileStatic(path, content) {
   if (!content) return null;
 
   const lines = content.split('\n');

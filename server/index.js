@@ -3,7 +3,6 @@ const path = require('path');
 
 const cors = require('cors');
 const express = require('express');
-const open = require('open');
 
 const { askRepository } = require('./ai');
 const { CLIENT_DIST, MAX_FILE_RESPONSE_BYTES } = require('./constants');
@@ -24,6 +23,15 @@ const {
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
+
+async function openBrowser(url) {
+  try {
+    const { default: open } = await import('open');
+    await open(url);
+  } catch {
+    console.log('Unable to open the browser automatically.');
+  }
+}
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -238,10 +246,6 @@ app.listen(PORT, async () => {
   setInterval(() => {}, 1000 * 60 * 60);
 
   if (!process.env.ALIYA_SKIP_OPEN && process.env.NODE_ENV !== 'development') {
-    try {
-      await open(`http://localhost:${PORT}`);
-    } catch {
-      console.log('Unable to open the browser automatically.');
-    }
+    await openBrowser(`http://localhost:${PORT}`);
   }
 });

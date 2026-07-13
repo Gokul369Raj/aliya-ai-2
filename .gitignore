@@ -1,7 +1,8 @@
 node_modules/
-node_modules_corrupt_backup/
-client/package-lock 2.json
+.npm-cache/
 .DS_Store
 output/
 tmp/
 .aliya-ai/
+client/dist/
+client/lint-results.txt

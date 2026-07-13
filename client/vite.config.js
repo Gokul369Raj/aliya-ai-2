@@ -38,12 +38,20 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    entries: ['index.html', 'src/main.jsx'],
+    include: [
+      'react-force-graph-3d',
+      'three-forcegraph',
+      'ngraph.forcelayout',
+    ],
+  },
   server: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: frontendPort,
-    strictPort: false,
+    strictPort: true,
     proxy: {
-      '/api': `http://localhost:${backendPort}`,
+      '/api': `http://127.0.0.1:${backendPort}`,
     },
   },
 })

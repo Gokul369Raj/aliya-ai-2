@@ -18,6 +18,8 @@
   "scripts": {
     "start": "node server/index.js",
     "build": "npm run build --prefix client",
+    "preview": "npm run build && node server/index.js",
+    "postinstall": "node scripts/ensure-deps.js",
     "dev": "node scripts/dev.js"
   },
   "dependencies": {

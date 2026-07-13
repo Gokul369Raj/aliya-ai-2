@@ -20,7 +20,6 @@ import { RunFlowchart } from './components/RunFlowchart'
 import { FileSummaryPanel } from './components/FileSummaryPanel'
 import { FlowExplorerPanel } from './components/FlowExplorerPanel'
 import { LayeredFlowView } from './components/LayeredFlowView'
-import { AliyaMascot3D } from './components/AliyaMascot3D'
 import { downloadBlob, generateRepositoryPdfReport } from './utils/pdfReport'
 import { buildVisibleGraph, formatBytes, phaseLabel, LANGUAGE_COLORS, LANGUAGE_LABELS, getNodeLanguageLabel, CATEGORY_COLORS, CATEGORY_LABELS, getNodeCategoryLabel, getNodeCategoryColor } from './graph-utils'
 import './App.css'
@@ -154,7 +153,7 @@ const Logo = ({ large = false }) => (
 function cleanDiagramLabel(value = '') {
   return String(value)
     .replace(/^\s*[A-Za-z0-9_]+\s*/, '')
-    .replace(/[\[\]{}()"']/g, '')
+    .replace(/[\][{}()"']/g, '')
     .replace(/\|.*?\|/g, '')
     .replace(/:/g, '')
     .trim()
@@ -849,12 +848,6 @@ function App() {
           <div className="glow-orb secondary"></div>
           <div className="landing-grid-pattern"></div>
         </div>
-
-        {!job && (
-          <div className="landing-mascot-stage" aria-label="Aliya AI mascot">
-            <AliyaMascot3D />
-          </div>
-        )}
 
         <header className="landing-navbar">
           <Logo />

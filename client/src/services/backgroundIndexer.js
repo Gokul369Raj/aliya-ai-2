@@ -56,7 +56,7 @@ async function processQueue() {
         await setSummary(item.repoId, item.path, newSummary);
       }
     }
-  } catch (err) {
+  } catch {
     // Silently handle errors for background tasks
     console.debug(`Background indexing skipped for ${item.path}`);
   }

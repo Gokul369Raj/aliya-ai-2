@@ -885,7 +885,6 @@ function drawStats(pdf, analysis) {
   pdf.addPage()
   pdf.heading('Repository Inventory', 1)
   const inventory = buildInventory(analysis)
-  const files = inventory.files
   const languages = inventory.languages
 
   pdf.metricCard('Folders', String(inventory.folderCount), MARGIN, pdf.y, 112)
