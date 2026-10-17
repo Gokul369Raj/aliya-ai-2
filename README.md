@@ -41,6 +41,33 @@ one), that step is skipped.
 
 **Requirements:** Node **20+** and **git** on your `PATH`.
 
+### Windows
+
+The commands above are identical in **PowerShell**, **Command Prompt** and **Git Bash** — there
+are no Unix-only flags anywhere. Install two things first:
+
+1. **Node 20+** — [nodejs.org](https://nodejs.org) (the `.msi` installer). Check with `node -v`.
+2. **Git for Windows** — [git-scm.com/download/win](https://git-scm.com/download/win). Keep the
+   default *"Git from the command line and also from 3rd-party software"* option, otherwise
+   `git` is not on `PATH` and the clone step fails.
+
+```powershell
+git clone https://github.com/Gokul369Raj/aliya-ai-2.git
+cd aliya-ai-2
+npm install
+npm start
+```
+
+`npm start` opens the app at <http://127.0.0.1:3001>. If Windows Firewall asks, allow Node on
+**private networks** only — the server binds to localhost and is not exposed.
+
+What is handled for Windows specifically:
+
+- npm is invoked through a shell (`npm.cmd` cannot be spawned directly on Node 20.12+).
+- The port-in-use check uses `netstat` on Windows and `lsof` on macOS/Linux.
+- `.gitattributes` forces LF for source files, so a Windows checkout behaves like a macOS one.
+- A failed UI build during `npm install` does not abort the install — `npm start` retries it.
+
 ---
 
 ## CLI

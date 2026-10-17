@@ -1,0 +1,25 @@
+# Normalise line endings so a Windows checkout and a macOS checkout produce the
+# same files. Without this, `git clone` on Windows gives CRLF in JS files, which
+# breaks shebangs and any script that splits on '\n'.
+* text=auto eol=lf
+
+# Files that must stay byte-for-byte
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.mp4 binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+# Shell scripts must never get CRLF — a CRLF shebang fails with "bad interpreter"
+*.sh text eol=lf
+*.command text eol=lf
+
+# Windows users get CRLF where it matters
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

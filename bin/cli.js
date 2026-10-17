@@ -69,11 +69,31 @@ function assertNodeVersion() {
   }
 }
 
-function runNpm(args, label) {
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-  const result = spawnSync(npm, args, { cwd: ROOT, stdio: 'inherit' })
-  if (result.error) die(`${label} failed: ${result.error.message}`)
-  if (result.status !== 0) die(`${label} failed.`)
+function runNpm(args, label, { strict = true } = {}) {
+  const isWindows = process.platform === 'win32'
+
+  // Node 20.12+ refuses to spawn a `.cmd` without a shell (the CVE-2024-27980
+  // fix), so `npm.cmd` throws EINVAL on Windows unless `shell` is set. This is
+  // what made `npm install` fail on Windows while working fine on macOS.
+  const quoted = isWindows
+    ? args.map((arg) => (/[\s"]/.test(arg) ? `"${arg}"` : arg))
+    : args
+
+  const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', quoted, {
+    cwd: ROOT,
+    stdio: 'inherit',
+    shell: isWindows,
+  })
+
+  const message = result.error
+    ? `${label} failed: ${result.error.message}`
+    : result.status !== 0
+      ? `${label} failed.`
+      : null
+
+  if (!message) return
+  if (strict) die(message)
+  throw new Error(message)
 }
 
 /**
@@ -81,8 +101,11 @@ function runNpm(args, label) {
  * `npx aliya-ai serve`. A fresh git clone has neither the client modules nor a
  * build, and this fills both in — that is what makes `npm install && npm start`
  * enough on a clean machine.
+ *
+ * `strict: false` makes failures throw instead of exiting, so `postinstall` can
+ * survive a failed build without taking the whole install down with it.
  */
-function ensureFrontend({ quiet = false } = {}) {
+function ensureFrontend({ quiet = false, strict = true } = {}) {
   if (process.env.ALIYA_SKIP_DEPS === '1') return
 
   const distIndex = path.join(ROOT, 'client', 'dist', 'index.html')
@@ -91,14 +114,19 @@ function ensureFrontend({ quiet = false } = {}) {
   // HTML behind with no hashed bundle next to it.
   if (fs.existsSync(distIndex) && fs.existsSync(distAssets)) return
 
+  const fail = (message) => {
+    if (strict) die(message)
+    throw new Error(message)
+  }
+
   if (!quiet) line(dim('  • installing the web UI (one time, takes a minute)…'))
   if (!fs.existsSync(path.join(ROOT, 'client', 'node_modules'))) {
-    runNpm(['install', '--prefix', 'client', '--no-audit', '--no-fund'], 'Client install')
+    runNpm(['install', '--prefix', 'client', '--no-audit', '--no-fund'], 'Client install', { strict })
   }
-  runNpm(['run', 'build', '--prefix', 'client'], 'Client build')
+  runNpm(['run', 'build', '--prefix', 'client'], 'Client build', { strict })
 
   if (!fs.existsSync(distIndex) || !fs.existsSync(distAssets)) {
-    die('The web UI did not build. Run `npm run build` to see why.')
+    fail('The web UI did not build. Run `npm run build` to see why.')
   }
 }
 
@@ -271,11 +299,12 @@ function clean(argv) {
  *
  * A bare path was always assumed to be a file, so `aliya-ai impact src/components`
  * looked up `file:src/components` and reported "no such node" for a folder that
- * exists.
+ * exists. Windows paths arrive with backslashes, and the graph stores forward
+ * slashes, so normalise first.
  */
 function resolveNodeId(repo, value) {
-  const raw = String(value)
-  if (raw.includes(':')) return raw
+  const raw = String(value).replace(/\\/g, '/').replace(/^\.\//, '')
+  if (/^(file|folder):/.test(raw)) return raw
 
   const ids = new Set((repo.analysis?.graph?.nodes || []).map((node) => node.id))
   if (ids.has(`file:${raw}`)) return `file:${raw}`
@@ -414,7 +443,18 @@ async function main() {
     case 'trace':
       return trace(rest)
     case 'prepare':
-      return ensureFrontend()
+      // Runs from `postinstall`. A failed UI build must never fail the whole
+      // `npm install` — the user would be left with no dependencies at all.
+      // `npm start` retries the build and reports the real error there.
+      try {
+        ensureFrontend({ quiet: true, strict: false })
+      } catch (error) {
+        line('')
+        line(`  ${yellow('!')} The web UI could not be prepared: ${error.message}`)
+        line(`    ${dim('Dependencies are installed. Run')} ${bold('npm start')} ${dim('to retry the build.')}`)
+        line('')
+      }
+      return
     default:
       line(`\n  ${red('✖')} Unknown command "${command}".\n`)
       usage()

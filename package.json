@@ -4,7 +4,7 @@
   "description": "Local-first tool that helps developers understand any GitHub repository in seconds",
   "main": "server/index.js",
   "files": [
-    "bin",
+    "bin/cli.js",
     "server",
     "client/dist",
     "package.json"

@@ -90,16 +90,42 @@ function ensureDependencies() {
 
 /**
  * Sirf LISTEN karne wali process ko maaro — browser ke normal connection
- * (khula Chrome tab) ko nahi. `-sTCP:LISTEN` se sirf server target hota hai.
+ * (khula Chrome tab) ko nahi.
+ *
+ * `lsof` sirf macOS/Linux par hota hai, isliye Windows par `netstat` se padhte
+ * hain. Pehle sirf lsof chalta tha, jisse Windows par port busy hone par bhi
+ * pata nahi chalta tha aur dev server bind hi nahi kar paata.
  */
 function listeningPids(port) {
+  return isWindows ? windowsListeningPids(port) : unixListeningPids(port);
+}
+
+function unixListeningPids(port) {
   const result = spawnSync('lsof', [`-tiTCP:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' });
-  if (result.status !== 0) return [];
+  if (result.error || result.status !== 0) return [];
   return (result.stdout || '')
     .trim()
     .split('\n')
     .map((line) => Number(line.trim()))
     .filter((pid) => Number.isFinite(pid) && pid !== process.pid);
+}
+
+function windowsListeningPids(port) {
+  // netstat -ano -p tcp →
+  //   TCP    0.0.0.0:3001    0.0.0.0:0    LISTENING    12345
+  const result = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) return [];
+
+  const pids = new Set();
+  for (const line of (result.stdout || '').split(/\r?\n/)) {
+    if (!/LISTENING/i.test(line)) continue;
+    const parts = line.trim().split(/\s+/);
+    const localAddress = parts[1] || '';
+    const pid = Number(parts[parts.length - 1]);
+    const localPort = Number(localAddress.slice(localAddress.lastIndexOf(':') + 1));
+    if (localPort === port && Number.isFinite(pid) && pid !== process.pid) pids.add(pid);
+  }
+  return [...pids];
 }
 
 async function freePort(port, label) {
@@ -135,7 +161,11 @@ async function freePort(port, label) {
   if (pids.length > 0) {
     console.error(`Port ${port} abhi bhi busy hai (PID ${pids.join(', ')}).`);
     console.error('Us process ko band karke dobara chalao:');
-    console.error(`  lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill -9`);
+    console.error(
+      isWindows
+        ? `  taskkill /PID ${pids[0]} /F`
+        : `  lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill -9`,
+    );
     process.exit(1);
   }
 }
