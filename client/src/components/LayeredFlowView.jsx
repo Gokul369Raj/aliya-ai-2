@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import cytoscape from 'cytoscape'
 import fcose from 'cytoscape-fcose'
 import { Expand, RotateCcw, Shrink, Target, ZoomIn, ZoomOut } from 'lucide-react'
-import { CATEGORY_COLORS, CATEGORY_LABELS, getNodeCategoryLabel } from '../graph-utils'
+import { CATEGORY_COLORS, CATEGORY_LABELS, VIZ_PALETTE, getNodeCategoryLabel } from '../graph-utils'
 
 cytoscape.use(fcose)
 
@@ -432,23 +432,26 @@ export function LayeredFlowView({
             width: 'data(size)',
             height: 'data(size)',
             shape: 'ellipse',
-            color: '#d4d4d8',
+            // Neo-brutalist label: ink text on a white plate with an ink rule.
+            color: '#111111',
             'font-size': 10,
-            'text-background-color': '#08080a',
-            'text-background-opacity': 0.9,
-            'text-background-padding': 2,
+            'text-background-color': '#ffffff',
+            'text-background-opacity': 1,
+            'text-background-padding': 3,
+            'text-border-width': 1,
+            'text-border-color': '#111111',
             'text-valign': 'bottom',
             'text-margin-y': 5,
             'background-color': 'data(color)',
-            'border-width': 1,
-            'border-color': '#27272a',
+            'border-width': 2,
+            'border-color': '#111111',
           },
         },
         {
           selector: 'node.primary-flow',
           style: {
             'border-width': 2,
-            'border-color': '#ffffff',
+            'border-color': '#140206',
             'shadow-blur': 12,
             'shadow-color': 'data(color)',
             'shadow-opacity': 0.45,
@@ -458,11 +461,11 @@ export function LayeredFlowView({
           selector: 'node.current',
           style: {
             'border-width': 4,
-            'border-color': '#67e8f9',
-            color: '#ffffff',
+            'border-color': VIZ_PALETTE.cyan,
+            color: '#140206',
             'font-size': 12,
             'shadow-blur': 26,
-            'shadow-color': '#67e8f9',
+            'shadow-color': VIZ_PALETTE.cyan,
             'shadow-opacity': 0.85,
           },
         },
@@ -470,15 +473,15 @@ export function LayeredFlowView({
           selector: 'node.selected',
           style: {
             'border-width': 4,
-            'border-color': '#ffffff',
-            color: '#ffffff',
+            'border-color': '#140206',
+            color: '#140206',
           },
         },
         {
           selector: 'node.hovered',
           style: {
             'border-width': 3,
-            'border-color': '#ffffff',
+            'border-color': '#140206',
           },
         },
         {
@@ -489,8 +492,8 @@ export function LayeredFlowView({
           selector: 'edge',
           style: {
             width: 1.1,
-            'line-color': '#3b82f6',
-            'target-arrow-color': '#3b82f6',
+            'line-color': VIZ_PALETTE.blue,
+            'target-arrow-color': VIZ_PALETTE.blue,
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             opacity: 0.45,
@@ -500,8 +503,8 @@ export function LayeredFlowView({
           selector: 'edge.flow-edge',
           style: {
             width: 2,
-            'line-color': '#67e8f9',
-            'target-arrow-color': '#67e8f9',
+            'line-color': VIZ_PALETTE.cyan,
+            'target-arrow-color': VIZ_PALETTE.cyan,
             opacity: 0.8,
           },
         },
@@ -509,8 +512,8 @@ export function LayeredFlowView({
           selector: 'edge.linked',
           style: {
             width: 2.8,
-            'line-color': '#ef4444',
-            'target-arrow-color': '#ef4444',
+            'line-color': VIZ_PALETTE.vermillion,
+            'target-arrow-color': VIZ_PALETTE.vermillion,
             opacity: 0.95,
           },
         },

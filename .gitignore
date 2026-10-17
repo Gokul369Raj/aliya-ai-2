@@ -6,3 +6,14 @@ tmp/
 .aliya-ai/
 client/dist/
 client/lint-results.txt
+brag-output/
+
+# Local tooling / scratch output — never part of the project
+.workbuddy-ai/
+.freebuff/
+server.log
+--full-page
+
+# Never commit a key
+.env
+.env.*

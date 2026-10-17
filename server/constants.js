@@ -2,7 +2,12 @@ const path = require('path');
 
 const APP_ROOT = path.resolve(__dirname, '..');
 const CLIENT_DIST = path.join(APP_ROOT, 'client', 'dist');
-const STORAGE_ROOT = path.join(APP_ROOT, '.aliya-ai');
+// ALIYA_STORAGE_ROOT lets the workspace live outside the checkout — useful for
+// a mounted volume in a deployed instance, and for tests that must not touch the
+// developer's real projects.json.
+const STORAGE_ROOT = process.env.ALIYA_STORAGE_ROOT
+  ? path.resolve(process.env.ALIYA_STORAGE_ROOT)
+  : path.join(APP_ROOT, '.aliya-ai');
 const REPOS_ROOT = path.join(STORAGE_ROOT, 'repos');
 
 const IGNORED_DIRECTORY_NAMES = new Set([

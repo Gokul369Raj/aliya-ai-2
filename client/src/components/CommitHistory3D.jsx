@@ -4,14 +4,28 @@ import SpriteText from 'three-spritetext'
 import * as THREE from 'three'
 import { Pause, Play, RotateCcw, Target, ZoomIn, ZoomOut } from 'lucide-react'
 
-const AUTHOR_COLORS = ['#22d3ee', '#facc15', '#a78bfa', '#34d399', '#fb7185', '#60a5fa', '#f97316', '#e879f9']
-const FILE_COLOR = '#cbd5e1'
-const AUTHOR_NODE_COLOR = '#14b8a6'
+import { VIZ_PALETTE } from '../graph-utils'
+
+// Every value clears 3:1 on the cream canvas — see VIZ_PALETTE in graph-utils.
+const AUTHOR_COLORS = [
+  VIZ_PALETTE.cyan,
+  VIZ_PALETTE.amber,
+  '#7c3aed',
+  '#059669',
+  VIZ_PALETTE.pink,
+  VIZ_PALETTE.blue,
+  VIZ_PALETTE.vermillion,
+  VIZ_PALETTE.mauve,
+]
+const FILE_COLOR = '#8a8175'
+const AUTHOR_NODE_COLOR = VIZ_PALETTE.teal
 const LINK_COLORS = {
-  changed: '#facc15',
-  parent: '#38bdf8',
-  author: '#34d399',
-  dimmed: '#172033',
+  changed: VIZ_PALETTE.amber,
+  parent: '#0369a1',
+  author: '#059669',
+  // Fades toward the canvas instead of to near-black (#172033), which made a
+  // de-emphasised link the most prominent thing on screen.
+  dimmed: '#ded7cb',
 }
 
 function authorColor(author, indexMap) {
@@ -253,7 +267,7 @@ export function CommitHistory3D({ history }) {
       mesh.material.opacity = isDimmed ? 0.12 : 0.96
       mesh.material.emissiveIntensity = isActive || isHovered ? 0.72 : 0.24
       group.scale.setScalar(node.id === activeId ? 1.35 : isActive || isHovered ? 1.16 : 1)
-      if (label) label.color = isDimmed ? '#334155' : '#e5e7eb'
+      if (label) label.color = isDimmed ? '#8a8175' : '#140206'
     })
 
     graphData.links.forEach((link) => {
@@ -282,7 +296,7 @@ export function CommitHistory3D({ history }) {
     group.add(mesh)
 
     const label = new SpriteText(node.label)
-    label.color = '#e5e7eb'
+    label.color = '#140206'
     label.textHeight = node.kind === 'commit' ? 2.8 : 2.2
     label.position.set(0, node.size + 3, 0)
     group.add(label)
@@ -366,7 +380,7 @@ export function CommitHistory3D({ history }) {
           width={dimensions.width}
           height={dimensions.height}
           graphData={{ nodes: graphData.nodes, links: graphData.links }}
-          backgroundColor="#0a0a0a"
+          backgroundColor="#f3eee7"
           nodeThreeObject={buildNodeObject}
           linkColor={(link) => (link._dimmed ? LINK_COLORS.dimmed : LINK_COLORS[link.type])}
           linkWidth={(link) => (link._active ? 2.4 : link.type === 'parent' ? 1.25 : 0.8)}

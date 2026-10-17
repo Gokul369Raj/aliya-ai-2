@@ -39,7 +39,7 @@ export function FileSummaryPanel({ analysis, selectedNode, fileContent, assistan
         return;
       }
 
-      const staticMeta = analyzeFileStatic(path, fileContent, analysis.graph.nodes);
+      const staticMeta = analyzeFileStatic(path, fileContent);
       const baseData = {
         ...(cached && cached.contentHash === contentHash ? cached : {}),
         contentHash,
@@ -54,17 +54,7 @@ export function FileSummaryPanel({ analysis, selectedNode, fileContent, assistan
         return;
       }
 
-      const prompt = `Analyze the following file from the repository. Keep it extremely concise. 
-Provide a short 1-2 sentence purpose, and a brief explanation of what the file does. 
-File Path: ${path}
-Content snippet:
-${fileContent.substring(0, 2000)} // Only sending top 2000 chars to save tokens!
-
-Format as JSON:
-{
-  "purpose": "Short purpose",
-  "aiSummary": "1-2 sentence explanation"
-}`;
+      const prompt = `Return ONLY valid JSON for file: ${path}. No markdown, no explanation outside JSON.\nContent:\n${fileContent.substring(0, 3000)}\n\n{"purpose":"1 sentence purpose","aiSummary":"2-3 sentence explanation"}`;
 
       const res = await askRepositoryQuestion({
         repoId,
@@ -74,10 +64,29 @@ Format as JSON:
         apiKey: assistantConfig?.apiKey,
       });
 
-      const jsonMatch = res.answer.match(/\{[\s\S]*\}/);
       let aiData = { aiSummary: "Could not generate summary." };
-      if (jsonMatch) {
-        aiData = JSON.parse(jsonMatch[0]);
+      try {
+        // Try to extract JSON from response (might be wrapped in markdown)
+        let jsonStr = res.answer;
+        const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (codeBlockMatch) jsonStr = codeBlockMatch[1];
+        
+        const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          aiData = JSON.parse(jsonMatch[0]);
+        } else {
+          // If no JSON found, use the raw answer as summary
+          aiData = { 
+            purpose: "See explanation below",
+            aiSummary: res.answer.substring(0, 500)
+          };
+        }
+      } catch {
+        // If JSON parsing fails, use raw answer
+        aiData = { 
+          purpose: "See explanation below",
+          aiSummary: res.answer.substring(0, 500)
+        };
       }
 
       const finalSummary = { ...baseData, ...aiData };
@@ -108,19 +117,25 @@ Format as JSON:
     setActionResult(null);
 
     try {
-      const path = selectedNode.path || selectedNode.id.replace(/^file:/, '');
-      const prompt = `Action: ${action.label}
-File: ${path}
-Content:
-${fileContent.substring(0, 3000)}
-Please perform the requested action concisely.`;
+      const filePath = selectedNode.path || selectedNode.id.replace(/^file:/, '');
+      
+      const prompts = {
+        explain: `Explain in detail how file ${filePath} works. Cover each function, the flow, and patterns used. Be specific with line references.`,
+        bug: `Review file ${filePath} for actual bugs ONLY. If no bugs found, say "No bugs found" and nothing else. If bugs exist, list each with line number and fix.`,
+        optimize: `Review file ${filePath} for performance/quality optimizations ONLY. If already optimized, say "Already well optimized". Otherwise list real optimizations with line numbers.`,
+        dependency: `Show all dependencies of file ${filePath}: what it imports and what imports it. List each with a 1-line reason.`,
+      };
+
+      const question = prompts[action.id] || `${action.label} for file ${filePath}`;
 
       const res = await askRepositoryQuestion({
         repoId: analysis.repoId,
-        question: prompt,
         provider: assistantConfig?.provider,
         model: assistantConfig?.model,
         apiKey: assistantConfig?.apiKey,
+        question,
+        selectedPath: filePath,
+        focusedNodeIds: [`file:${filePath}`],
       });
 
       setActionResult(res.answer);
@@ -204,18 +219,19 @@ Please perform the requested action concisely.`;
       {summaryData && (
         <div className="summary-actions">
           {[
-            { id: 'explain', label: 'Explain More', icon: <ChevronRight size={14} /> },
-            { id: 'bugs', label: 'Find Bugs', icon: <AlertTriangle size={14} /> },
-            { id: 'optimize', label: 'Optimize', icon: <Zap size={14} /> },
-            { id: 'deps', label: 'Show Dependencies', icon: <Network size={14} /> }
+            { id: 'explain', label: 'Detail', icon: <ChevronRight size={13} />, title: 'Detailed explanation' },
+            { id: 'bug', label: 'Bugs', icon: <AlertTriangle size={13} />, title: 'Find actual bugs only' },
+            { id: 'optimize', label: 'Perf', icon: <Zap size={13} />, title: 'Performance optimizations' },
+            { id: 'dependency', label: 'Deps', icon: <Network size={13} />, title: 'Import/depend relationships' }
           ].map(action => (
             <button 
               key={action.id} 
               className={`action-btn ${activeAction === action.id ? 'active' : ''}`}
               onClick={() => handleAction(action)}
               disabled={actionLoading}
+              title={action.title}
             >
-              {action.icon} {action.label}
+              {action.icon} <span className="action-label">{action.label}</span>
             </button>
           ))}
         </div>

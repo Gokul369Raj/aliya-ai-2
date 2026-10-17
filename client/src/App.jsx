@@ -1,9 +1,11 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import Editor from '@monaco-editor/react'
-import { Sparkles, LoaderCircle, Settings2, Code2, Network, X, Filter, ChevronDown, ChevronLeft, ChevronRight, Search, Plus, Minus, Copy, Trash2, Maximize, Minimize, Clock3, GitBranch, ArrowRight, ShieldCheck, Zap, FileText } from 'lucide-react'
+import { Sparkles, LoaderCircle, Settings2, Code2, Network, Box, X, Filter, ChevronDown, ChevronLeft, ChevronRight, Search, Plus, Minus, Copy, Trash2, Maximize, Minimize, Clock3, GitBranch, ArrowRight, ShieldCheck, Zap, FileText, Activity, Check, Lightbulb, Cpu, CornerDownLeft } from 'lucide-react'
 
 import {
   askRepositoryQuestion,
+  askRepositoryQuestionStream,
   fetchCommitHistory,
   fetchRecentProjects,
   fetchRepository,
@@ -15,20 +17,27 @@ import {
 } from './api'
 import { Graph2D } from './components/Graph2D'
 import { Graph3D } from './components/Graph3D'
-import { CommitHistory3D } from './components/CommitHistory3D'
+import { CommitGraphPanel } from './components/CommitGraphPanel'
 import { RunFlowchart } from './components/RunFlowchart'
 import { FileSummaryPanel } from './components/FileSummaryPanel'
 import { FlowExplorerPanel } from './components/FlowExplorerPanel'
+import HealthScorePanel from './components/HealthScorePanel'
+import GitIntelligencePanel from './components/GitIntelligencePanel'
 import { LayeredFlowView } from './components/LayeredFlowView'
-import { downloadBlob, generateRepositoryPdfReport } from './utils/pdfReport'
-import { buildVisibleGraph, formatBytes, phaseLabel, LANGUAGE_COLORS, LANGUAGE_LABELS, getNodeLanguageLabel, CATEGORY_COLORS, CATEGORY_LABELS, getNodeCategoryLabel, getNodeCategoryColor } from './graph-utils'
+import { PdfReportViewer } from './components/PdfReportViewer'
+import { generateRepositoryPdfReport } from './utils/pdfReport'
+import { buildVisibleGraph, formatBytes, phaseLabel, LANGUAGE_COLORS, LANGUAGE_LABELS, getNodeLanguageLabel, CATEGORY_NODE_COLORS, CATEGORY_LABELS, getNodeCategoryLabel, getNodeCategoryColor } from './graph-utils'
 import './App.css'
 
-const QUICK_PROMPTS = [
-  'Explain the architecture',
-  'What is the core flow?',
-  'Where should I start?',
+// Logo cloud on the landing screen. Built from the languages the analyzer
+// actually recognises (LANGUAGE_LABELS) so the strip never over-claims.
+const LANDING_LANGUAGES = [
+  'javascript', 'typescript', 'python', 'go', 'rust', 'java', 'php', 'ruby',
+  'c', 'c++', 'csharp', 'swift', 'kotlin', 'scala', 'dart', 'shell',
+  'react', 'vue', 'svelte', 'angular', 'nextjs', 'nuxtjs',
 ]
+  .filter((key) => LANGUAGE_LABELS[key])
+  .map((key) => ({ key, label: LANGUAGE_LABELS[key] }))
 
 const DEFAULT_CONFIG = {
   provider: 'openai',
@@ -151,6 +160,10 @@ const Logo = ({ large = false }) => (
 );
 
 function cleanDiagramLabel(value = '') {
+  // Handle S1["label"] format from Mermaid
+  const labelMatch = String(value).match(/^\s*[A-Za-z0-9_]+\s*\["(.+?)"\]/)
+  if (labelMatch) return labelMatch[1].trim().slice(0, 42) || 'Step'
+
   return String(value)
     .replace(/^\s*[A-Za-z0-9_]+\s*/, '')
     .replace(/[\][{}()"']/g, '')
@@ -165,7 +178,7 @@ function parseMermaidFlow(code = '') {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.includes('-->'))
-    .slice(0, 6)
+    .slice(0, 8) // Show up to 8 edges
     .map((line) => {
       const [source, target] = line.split(/-->|---/).map(cleanDiagramLabel)
       return { source, target }
@@ -179,68 +192,228 @@ function DiagramBlock({ code }) {
     return <pre className="chat-code-block">{code}</pre>
   }
 
-  const nodes = []
+  // Group by source instead of flattening into one list. The old version stacked
+  // every node in first-seen order, so `A --> B` plus `A --> C` rendered as
+  // A → B → C and implied a relationship that does not exist.
+  const groups = []
+  const groupIndex = new Map()
   edges.forEach((edge) => {
-    if (!nodes.includes(edge.source)) nodes.push(edge.source)
-    if (!nodes.includes(edge.target)) nodes.push(edge.target)
+    if (!groupIndex.has(edge.source)) {
+      groupIndex.set(edge.source, groups.length)
+      groups.push({ source: edge.source, targets: [] })
+    }
+    const group = groups[groupIndex.get(edge.source)]
+    if (!group.targets.includes(edge.target)) group.targets.push(edge.target)
   })
 
+  const nodeCount = new Set(edges.flatMap((edge) => [edge.source, edge.target])).size
+
   return (
-    <div className="chat-diagram" aria-label="Repository diagram">
-      {nodes.slice(0, 7).map((node, index) => (
-        <div className="chat-diagram-row" key={`${node}-${index}`}>
-          <div className="chat-diagram-node">{node}</div>
-          {index < nodes.length - 1 && <div className="chat-diagram-arrow">↓</div>}
-        </div>
-      ))}
-    </div>
+    <figure
+      className="chat-diagram"
+      aria-label={`Diagram with ${nodeCount} nodes and ${edges.length} links`}
+    >
+      <figcaption className="chat-diagram-head">
+        <span className="chat-diagram-title">Diagram</span>
+        <span className="chat-diagram-meta">{nodeCount} nodes · {edges.length} links</span>
+      </figcaption>
+      <div className="chat-diagram-body">
+        {groups.map((group) => (
+          <div className="chat-diagram-group" key={group.source}>
+            <div className="chat-diagram-node is-source">{group.source}</div>
+            <div className="chat-diagram-targets">
+              {group.targets.map((target) => (
+                <div className="chat-diagram-target" key={target}>
+                  <span className="chat-diagram-arrow" aria-hidden="true">→</span>
+                  <div className="chat-diagram-node">{target}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </figure>
   )
 }
 
 function renderInlineMarkdown(text = '') {
-  const parts = String(text).split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean)
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)\s]+\))/g
+  const parts = String(text).split(pattern).filter(Boolean)
   return parts.map((part, index) => {
-    if (part.startsWith('`') && part.endsWith('`')) {
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
       return <code key={index}>{part.slice(1, -1)}</code>
     }
-    if (part.startsWith('**') && part.endsWith('**')) {
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
       return <strong key={index}>{part.slice(2, -2)}</strong>
+    }
+    const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/)
+    if (link) {
+      return (
+        <a key={index} href={link[2]} target="_blank" rel="noreferrer noopener">
+          {link[1]}
+        </a>
+      )
     }
     return <span key={index}>{part}</span>
   })
 }
 
-function ChatMarkdown({ content }) {
-  const blocks = String(content || '').split(/```(\w+)?\n([\s\S]*?)```/g)
-  const rendered = []
+/**
+ * Parse a lightweight markdown subset into block descriptors.
+ * Supports: fenced code, headings, ordered/unordered lists, blockquotes,
+ * horizontal rules and paragraphs.
+ */
+function parseChatBlocks(source = '') {
+  const lines = String(source).replace(/\r\n/g, '\n').split('\n')
+  const blocks = []
+  let index = 0
 
-  for (let index = 0; index < blocks.length; index += 3) {
-    const text = blocks[index] || ''
-    const language = blocks[index + 1] || ''
-    const code = blocks[index + 2] || ''
+  const isBlockStart = (line) =>
+    /^\s*(?:```|#{1,6}\s|>|[-*+]\s|\d+[.)]\s|(?:---|\*\*\*|___)\s*$)/.test(line)
 
-    text.split('\n').forEach((line, lineIndex) => {
-      const trimmed = line.trim()
-      if (!trimmed) return
-      if (/^#{1,3}\s+/.test(trimmed)) {
-        rendered.push(<strong className="chat-md-heading" key={`h-${index}-${lineIndex}`}>{trimmed.replace(/^#{1,3}\s+/, '')}</strong>)
-      } else if (/^[-*]\s+/.test(trimmed)) {
-        rendered.push(<div className="chat-md-bullet" key={`b-${index}-${lineIndex}`}>{renderInlineMarkdown(trimmed.replace(/^[-*]\s+/, ''))}</div>)
-      } else {
-        rendered.push(<p key={`p-${index}-${lineIndex}`}>{renderInlineMarkdown(trimmed)}</p>)
+  while (index < lines.length) {
+    const line = lines[index]
+
+    const fence = line.match(/^\s*```(\S+)?\s*$/)
+    if (fence) {
+      const language = (fence[1] || '').toLowerCase()
+      const buffer = []
+      index += 1
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        buffer.push(lines[index])
+        index += 1
       }
-    })
-
-    if (code) {
-      rendered.push(
-        language.toLowerCase() === 'mermaid'
-          ? <DiagramBlock code={code} key={`d-${index}`} />
-          : <pre className="chat-code-block" key={`c-${index}`}>{code}</pre>,
-      )
+      index += 1
+      blocks.push({ type: 'code', language, code: buffer.join('\n') })
+      continue
     }
+
+    if (!line.trim()) {
+      index += 1
+      continue
+    }
+
+    const heading = line.match(/^\s*(#{1,6})\s+(.*)$/)
+    if (heading) {
+      blocks.push({ type: 'heading', level: heading[1].length, text: heading[2].trim() })
+      index += 1
+      continue
+    }
+
+    if (/^\s*(?:---|\*\*\*|___)\s*$/.test(line)) {
+      blocks.push({ type: 'hr' })
+      index += 1
+      continue
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const buffer = []
+      while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+        buffer.push(lines[index].replace(/^\s*>\s?/, ''))
+        index += 1
+      }
+      blocks.push({ type: 'quote', text: buffer.join(' ') })
+      continue
+    }
+
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items = []
+      while (index < lines.length && /^\s*[-*+]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*[-*+]\s+/, '').trim())
+        index += 1
+      }
+      blocks.push({ type: 'ul', items })
+      continue
+    }
+
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items = []
+      while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*\d+[.)]\s+/, '').trim())
+        index += 1
+      }
+      blocks.push({ type: 'ol', items })
+      continue
+    }
+
+    const buffer = [line.trim()]
+    index += 1
+    while (index < lines.length && lines[index].trim() && !isBlockStart(lines[index])) {
+      buffer.push(lines[index].trim())
+      index += 1
+    }
+    blocks.push({ type: 'p', text: buffer.join(' ') })
   }
 
-  return rendered
+  return blocks
+}
+
+function ChatCodeBlock({ code, language }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await window.navigator.clipboard.writeText(code)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1400)
+    } catch {
+      // Clipboard unavailable — silently ignore.
+    }
+  }, [code])
+
+  return (
+    <div className="chat-code">
+      <div className="chat-code-head">
+        <span className="chat-code-lang">{language || 'text'}</span>
+        <button type="button" className="chat-code-copy" onClick={handleCopy}>
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          <span>{copied ? 'Copied' : 'Copy'}</span>
+        </button>
+      </div>
+      <pre className="chat-code-block">{code}</pre>
+    </div>
+  )
+}
+
+function ChatMarkdown({ content }) {
+  const blocks = useMemo(() => parseChatBlocks(content), [content])
+
+  return blocks.map((block, index) => {
+    switch (block.type) {
+      case 'code':
+        return block.language === 'mermaid'
+          ? <DiagramBlock code={block.code} key={`d-${index}`} />
+          : <ChatCodeBlock code={block.code} language={block.language} key={`c-${index}`} />
+      case 'heading':
+        return (
+          <strong className={`chat-md-heading level-${Math.min(block.level, 3)}`} key={`h-${index}`}>
+            {renderInlineMarkdown(block.text)}
+          </strong>
+        )
+      case 'ul':
+        return (
+          <ul className="chat-md-list" key={`ul-${index}`}>
+            {block.items.map((item, itemIndex) => (
+              <li key={itemIndex}>{renderInlineMarkdown(item)}</li>
+            ))}
+          </ul>
+        )
+      case 'ol':
+        return (
+          <ol className="chat-md-list ordered" key={`ol-${index}`}>
+            {block.items.map((item, itemIndex) => (
+              <li key={itemIndex}>{renderInlineMarkdown(item)}</li>
+            ))}
+          </ol>
+        )
+      case 'quote':
+        return <blockquote className="chat-md-quote" key={`q-${index}`}>{renderInlineMarkdown(block.text)}</blockquote>
+      case 'hr':
+        return <hr className="chat-md-rule" key={`hr-${index}`} />
+      default:
+        return <p key={`p-${index}`}>{renderInlineMarkdown(block.text)}</p>
+    }
+  })
 }
 
 function buildChatReportFacts(analysis) {
@@ -270,19 +443,96 @@ function ReportFacts({ facts }) {
 }
 
 function ChatMessage({ message, onCopy }) {
+  const [copied, setCopied] = useState(false)
+  const isAssistant = message.role === 'assistant'
+
+  const handleCopy = useCallback(async () => {
+    await onCopy(message.content)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1400)
+  }, [message.content, onCopy])
+
   return (
     <div className={`chat-bubble ${message.role}`}>
+      {isAssistant && (
+        <span className="chat-avatar" aria-hidden="true">
+          <Sparkles size={13} />
+        </span>
+      )}
       <div className="chat-content-wrap">
         <div className="chat-content">
           <ChatMarkdown content={message.content} />
-          {message.role === 'assistant' && <ReportFacts facts={message.reportFacts} />}
+          {isAssistant && <ReportFacts facts={message.reportFacts} />}
         </div>
-        <button className="chat-copy-btn" onClick={() => onCopy(message.content)} title="Copy message">
-          <Copy size={12} />
+        <button className="chat-copy-btn" onClick={handleCopy} title="Copy message">
+          {copied ? <Check size={12} /> : <Copy size={12} />}
         </button>
       </div>
     </div>
   )
+}
+
+const QUICK_PROMPTS = [
+  'Explain the architecture',
+  'What is the core flow?',
+  'Where should I start?',
+  'What are the biggest risks?',
+]
+
+/**
+ * The empty state is where most people stall — a blank box does not tell you
+ * what this assistant is actually good at. Each card names a question the
+ * scanner can genuinely answer from the graph and the file inventory.
+ */
+const STARTER_PROMPTS = [
+  {
+    label: 'How is this codebase put together?',
+    hint: 'Layers, entry points and the path a request takes',
+    question: 'Explain the architecture of this repository: the layers, the entry points, and how a request moves through it.',
+  },
+  {
+    label: 'What breaks if I change this?',
+    hint: 'Blast radius for the file you have selected',
+    question: 'If I change the currently selected file, what else is affected? Name the dependants.',
+  },
+  {
+    label: 'Where should a new engineer start?',
+    hint: 'Reading order grounded in real imports',
+    question: 'Where should a new engineer start reading this codebase, and in what order?',
+  },
+  {
+    label: 'What are the real risks here?',
+    hint: 'Circular deps, dead code, unresolved imports',
+    question: 'What are the biggest architectural risks in this repository, and which files carry them?',
+  },
+  {
+    label: 'Walk me through the main flow',
+    hint: 'Step by step, naming each file',
+    question: 'Walk me through the main execution flow step by step, naming the file and symbol at each step.',
+  },
+  {
+    label: 'How does the data layer work?',
+    hint: 'Storage, models and where they are touched',
+    question: 'How does the data layer work here — what stores state, and which files read or write it?',
+  },
+]
+
+function buildFollowUps(analysis, messages) {
+  if (!analysis) return []
+  const flows = (analysis.flows?.available || []).map((flow) => flow.label).filter(Boolean)
+  const files = (analysis.summary?.importantFiles || []).map((file) => file.path).filter(Boolean)
+  const lastQuestion = messages.filter((message) => message.role === 'user').slice(-1)[0]?.content || ''
+
+  const pool = [
+    flows[0] ? `Walk me through the ${flows[0]} flow step by step` : null,
+    files[0] ? `What does \`${files[0]}\` do?` : null,
+    'Where are the biggest risks in this repo?',
+    files[1] ? `How does \`${files[1]}\` connect to the rest of the repo?` : null,
+    flows[1] ? `Explain the ${flows[1]} flow` : null,
+    'How would I add a new feature to this codebase?',
+  ].filter(Boolean)
+
+  return pool.filter((prompt) => prompt !== lastQuestion).slice(0, 3)
 }
 
 function App() {
@@ -296,7 +546,7 @@ function App() {
   const [activeArchitectureFlow, setActiveArchitectureFlow] = useState(null)
   const [commitHistory, setCommitHistory] = useState(null)
   const [commitHistoryState, setCommitHistoryState] = useState({ loading: false, error: '' })
-  const [reportState, setReportState] = useState({ loading: false, error: '' })
+  const [reportState, setReportState] = useState({ loading: false, error: '', open: false, url: '', filename: '', size: 0 })
   const [job, setJob] = useState(null)
   const [viewMode, setViewMode] = useState('3d')
   const [selectedNodeId, setSelectedNodeId] = useState('')
@@ -314,6 +564,9 @@ function App() {
   const [editorLineNumbers, setEditorLineNumbers] = useState(true)
   const [chatInputRows, setChatInputRows] = useState(1)
   const [isChatOpen, setIsChatOpen] = useState(false)
+  // The dock is fine for a quick follow-up; a real research session needs the
+  // whole window. Expanding lifts the same panel into a full-screen overlay.
+  const [isChatExpanded, setIsChatExpanded] = useState(false)
   const [displayJobProgress, setDisplayJobProgress] = useState(0)
   const displayJobIdRef = useRef('')
   const [chatPanelHeight, setChatPanelHeight] = useState(() => {
@@ -331,6 +584,7 @@ function App() {
   const rightPaneRef = useRef(null)
   const filterButtonRef = useRef(null)
   const paneActionsRef = useRef(null)
+  const reportUrlRef = useRef('')
   const [toolbarScroll, setToolbarScroll] = useState({ canLeft: false, canRight: false })
   const chatResizeStateRef = useRef({ dragging: false, startY: 0, startHeight: 0 })
   const [filterMenuPosition, setFilterMenuPosition] = useState({ top: 0, left: 0, width: 320 })
@@ -342,6 +596,10 @@ function App() {
     { role: 'assistant', content: 'Analyze a repository to ask questions about its architecture and codebase.' }
   ])
   const [aiBusy, setAiBusy] = useState(false)
+  // The answer being streamed right now. Kept out of `messages` so a partial
+  // answer can never be mistaken for a finished one (and so React never has to
+  // splice a placeholder into the list mid-render).
+  const [streamingText, setStreamingText] = useState('')
   const [error, setError] = useState('')
 
   const deferredSearch = useDeferredValue('')
@@ -532,17 +790,37 @@ function App() {
       })
   }, [])
 
+  const revokeReportUrl = useCallback(() => {
+    if (reportUrlRef.current) {
+      window.URL.revokeObjectURL(reportUrlRef.current)
+      reportUrlRef.current = ''
+    }
+  }, [])
+
+  useEffect(() => () => revokeReportUrl(), [revokeReportUrl])
+
+  const resetReportState = useCallback(() => {
+    revokeReportUrl()
+    setReportState({ loading: false, error: '', open: false, url: '', filename: '', size: 0 })
+  }, [revokeReportUrl])
+
   const handleDownloadPdfReport = useCallback(async () => {
     if (!analysis) return
 
-    setReportState({ loading: true, error: '' })
+    revokeReportUrl()
+    setReportState({ loading: true, error: '', open: true, url: '', filename: '', size: 0 })
     try {
       let reportCommitHistory = commitHistory
       if (!reportCommitHistory && analysis.repoId) {
-        const payload = await fetchCommitHistory(analysis.repoId, 150)
-        reportCommitHistory = payload
-        setCommitHistory(payload)
-        setCommitHistoryState({ loading: false, error: '' })
+        try {
+          const payload = await fetchCommitHistory(analysis.repoId, 150)
+          reportCommitHistory = payload
+          setCommitHistory(payload)
+          setCommitHistoryState({ loading: false, error: '' })
+        } catch (fetchErr) {
+          console.warn('Could not fetch commit history for PDF:', fetchErr)
+          reportCommitHistory = null
+        }
       }
 
       const blob = generateRepositoryPdfReport({
@@ -551,14 +829,43 @@ function App() {
         activeArchitectureFlow,
       })
       const safeName = (analysis.repoName || 'repository').replace(/[^a-z0-9-_]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase()
-      downloadBlob(blob, `${safeName || 'repository'}-report.pdf`)
-      setReportState({ loading: false, error: '' })
+      const filename = `${safeName || 'repository'}-report.pdf`
+      const url = window.URL.createObjectURL(blob)
+      reportUrlRef.current = url
+      setReportState({ loading: false, error: '', open: true, url, filename, size: blob.size })
     } catch (e) {
+      console.error('PDF generation error:', e)
       const message = e?.message || 'PDF report generation failed.'
-      setReportState({ loading: false, error: message })
-      setError(message)
+      setReportState({ loading: false, error: message, open: true, url: '', filename: '', size: 0 })
     }
-  }, [activeArchitectureFlow, analysis, commitHistory])
+  }, [activeArchitectureFlow, analysis, commitHistory, revokeReportUrl])
+
+  const openPdfReport = useCallback(() => {
+    if (reportState.url) {
+      setReportState((current) => ({ ...current, open: true }))
+      return
+    }
+    void handleDownloadPdfReport()
+  }, [reportState.url, handleDownloadPdfReport])
+
+  const downloadPdfReport = useCallback(() => {
+    const { url, filename } = reportState
+    if (!url) return
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename || 'repository-report.pdf'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+  }, [reportState])
+
+  const openPdfReportInTab = useCallback(() => {
+    if (reportState.url) window.open(reportState.url, '_blank', 'noopener,noreferrer')
+  }, [reportState.url])
+
+  const closePdfViewer = useCallback(() => {
+    setReportState((current) => ({ ...current, open: false }))
+  }, [])
 
   // Optimize graph building using useCallback and useMemo
   const visibleGraph = useMemo(() => {
@@ -628,6 +935,15 @@ function App() {
     ).length
   ), [analysis])
 
+  const followUps = useMemo(
+    () => (aiBusy || messages.length < 2 ? [] : buildFollowUps(analysis, messages)),
+    [aiBusy, analysis, messages],
+  )
+
+  const clearChat = useCallback(() => {
+    setMessages([{ role: 'assistant', content: 'Repository indexed. Ask about architecture, dependencies, or files.' }])
+  }, [])
+
   useEffect(() => {
     setSummaryClosedNodeId('')
   }, [selectedNodeId])
@@ -692,6 +1008,7 @@ function App() {
     setActiveArchitectureFlow(null)
     setCommitHistory(null)
     setCommitHistoryState({ loading: false, error: '' })
+    resetReportState()
     setSelectedNodeId('')
     setHoveredNodeId('')
     setFileState({ loading: false, data: null, error: '' })
@@ -715,6 +1032,7 @@ function App() {
       setGraphScope('repo')
       setActiveArchitectureFlow(null)
       setCommitHistory(null)
+      resetReportState()
       setSelectedNodeId('')
       setHoveredNodeId('')
       setFileState({ loading: false, data: null, error: '' })
@@ -750,22 +1068,44 @@ function App() {
     if (!analysis || !assistantConfig.apiKey.trim() || !prompt) return
     setError('')
     setAiBusy(true)
+    setStreamingText('')
     setMessages(current => [...current, { role: 'user', content: prompt }])
     setQuestion('')
+
+    // Build conversation history for follow-up context (last 6 messages)
+    const conversationHistory = messages.slice(-6).map(m => ({ role: m.role, content: m.content }))
+    const reportFacts = buildChatReportFacts(analysis)
+    const payload = {
+      repoId: analysis.repoId,
+      provider: assistantConfig.provider,
+      model: effectiveModel,
+      apiKey: assistantConfig.apiKey,
+      question: prompt,
+      selectedPath: selectedNode?.type === 'folder' ? '' : selectedNode?.path || '',
+      focusedNodeIds: selectedNodeId ? [selectedNodeId, ...(analysis.graph.adjacency[selectedNodeId] || [])] : [],
+      conversationHistory,
+    }
+
     try {
-      const response = await askRepositoryQuestion({
-        repoId: analysis.repoId,
-        provider: assistantConfig.provider,
-        model: effectiveModel,
-        apiKey: assistantConfig.apiKey,
-        question: prompt,
-        selectedPath: selectedNode?.type === 'folder' ? '' : selectedNode?.path || '',
-        focusedNodeIds: selectedNodeId ? [selectedNodeId, ...(analysis.graph.adjacency[selectedNodeId] || [])] : [],
-      })
-      setMessages(current => [...current, { role: 'assistant', content: response.answer, reportFacts: buildChatReportFacts(analysis) }])
+      let answer
+      try {
+        answer = await askRepositoryQuestionStream(payload, {
+          onDelta: (_chunk, fullText) => setStreamingText(fullText),
+        })
+      } catch (streamError) {
+        // Streaming is a nicety, not a requirement. If a proxy buffers the
+        // response or the provider refuses to stream, fall back to the buffered
+        // endpoint instead of surfacing an error.
+        console.warn('Streaming failed, falling back:', streamError.message)
+        const response = await askRepositoryQuestion(payload)
+        answer = response.answer
+      }
+
+      setMessages(current => [...current, { role: 'assistant', content: answer, reportFacts }])
     } catch (e) {
       setError(e.message)
     } finally {
+      setStreamingText('')
       setAiBusy(false)
     }
   }
@@ -824,6 +1164,7 @@ function App() {
     setActiveArchitectureFlow(null)
     setCommitHistory(null)
     setCommitHistoryState({ loading: false, error: '' })
+    resetReportState()
   }
 
   function closeArchitectureExplorer() {
@@ -841,118 +1182,133 @@ function App() {
     const currentPhaseIndex = Math.max(0, ANALYSIS_PHASES.indexOf(job?.phase || 'queued'))
 
     return (
-      <div className="landing-screen">
-        <div className="mouse-glow" ref={mouseGlowRef}></div>
-        <div className="ai-background-animation">
-          <div className="glow-orb"></div>
-          <div className="glow-orb secondary"></div>
-          <div className="landing-grid-pattern"></div>
-        </div>
+      <div className="tv-landing">
+        <div className="tv-cursor-glow" ref={mouseGlowRef}></div>
 
-        <header className="landing-navbar">
-          <Logo />
-          <div className="landing-navbar-status">
-            <span></span>
-            Local-first code intelligence
+        <header className="tv-nav">
+          <div className="tv-nav-inner">
+            <Logo />
+            <span className="tv-nav-tag">Code intelligence</span>
+            <div className="tv-nav-actions">
+              <span className="tv-nav-status">
+                <i aria-hidden="true" />
+                Local-first
+              </span>
+              <button
+                type="button"
+                className="tv-nav-cta"
+                onClick={() => setShowRecentProjects(true)}
+              >
+                <Clock3 size={14} />
+                Recent Projects
+                {recentProjects.length > 0 && <em>{recentProjects.length}</em>}
+              </button>
+            </div>
           </div>
         </header>
 
-        <main className="landing-content">
-          <h1>Understand a GitHub repo<br /><span>in minutes.</span></h1>
-          <p className="landing-description">
-            Paste a repository URL. Aliya AI builds a clean architecture graph, repo-only answers,
-            and report-ready evidence without extra setup.
-          </p>
-          
-          <div className="landing-analysis-center">
-            {job && job.status !== 'failed' && job.status !== 'completed' ? (
-              <div className="analysis-loader" role="status" aria-live="polite">
-              <div className="loader-header">
-                <div className="loader-pulse">
-                  <LoaderCircle className="spin" size={22} />
-                </div>
-                <div>
-                  <p className="loader-title">{phaseLabel(job.phase)}</p>
-                  <p className="loader-message">{job.message}</p>
-                </div>
-              </div>
+        <main className="tv-hero">
+          <div className="tv-hero-inner">
+            <span className="tv-eyebrow">
+              <i aria-hidden="true" />
+              Local scan · nothing leaves your machine
+            </span>
 
-              <div className="loader-metric">
-                <div className="metric-row">
-                  <span>Total analysis</span>
-                  <strong>{totalPercent}%</strong>
-                </div>
-                <div className="landing-progress-track" aria-label={`Total analysis ${totalPercent}%`}>
-                  <div className="landing-progress-fill" style={{ width: `${totalPercent}%` }} />
-                </div>
-              </div>
+            <h1 className="tv-headline">
+              Understand a GitHub repo
+              <br />
+              <span className="tv-headline-accent">in minutes.</span>
+            </h1>
 
-              <div className="loader-steps">
-                {ANALYSIS_PHASES.slice(0, -1).map((phase, index) => (
-                  <span
-                    key={phase}
-                    className={`loader-step ${index < currentPhaseIndex ? 'is-complete' : ''} ${phase === job.phase ? 'is-active' : ''}`}
-                  >
-                    {phaseLabel(phase)}
-                  </span>
-                ))}
-              </div>
-              </div>
-            ) : (
-              <div className="landing-analyze-card">
-              <div className="landing-card-header">
-                <div>
-                  <strong>Paste GitHub repository URL</strong>
-                  <span className="landing-card-kicker">Public repositories supported</span>
+            <p className="tv-lede">
+              Paste a repository URL. Aliya AI builds a clean architecture graph,
+              repo-only answers, and report-ready evidence without extra setup.
+            </p>
+
+            <div className="tv-cta">
+              {job && job.status !== 'failed' && job.status !== 'completed' ? (
+                <div className="tv-loader" role="status" aria-live="polite">
+                  <div className="tv-loader-head">
+                    <span className="tv-loader-pulse">
+                      <LoaderCircle className="spin" size={20} />
+                    </span>
+                    <div className="tv-loader-copy">
+                      <p className="tv-loader-title">{phaseLabel(job.phase)}</p>
+                      <p className="tv-loader-message">{job.message}</p>
+                    </div>
+                    <strong className="tv-loader-percent">{totalPercent}%</strong>
+                  </div>
+
+                  <div className="tv-progress" aria-label={`Total analysis ${totalPercent}%`}>
+                    <div className="tv-progress-fill" style={{ width: `${totalPercent}%` }} />
+                  </div>
+
+                  <div className="tv-steps">
+                    {ANALYSIS_PHASES.slice(0, -1).map((phase, index) => (
+                      <span
+                        key={phase}
+                        className={`tv-step ${index < currentPhaseIndex ? 'is-complete' : ''} ${phase === job.phase ? 'is-active' : ''}`}
+                      >
+                        {phaseLabel(phase)}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-                <span className="landing-card-status"><ShieldCheck size={13} /> Local scan</span>
-              </div>
-              <form className="search-bar large-search" onSubmit={handleAnalyze}>
-                <GitBranch size={19} className="icon-muted" />
-                <input
-                  value={repoUrl}
-                  onChange={(e) => setRepoUrl(e.target.value)}
-                  placeholder="https://github.com/owner/repository"
-                  aria-label="GitHub repository URL"
-                  autoFocus
-                />
-                <button type="submit" disabled={!repoUrl.trim()} title="Analyze repository" aria-label="Analyze repository">
-                  <ArrowRight size={18} />
-                </button>
-              </form>
-              <div className="landing-card-footnote">
-                Local scan · Verified graph · Short AI answers
-              </div>
-              </div>
+              ) : (
+                <>
+                  <form className="tv-form" onSubmit={handleAnalyze}>
+                    <GitBranch size={18} className="tv-form-icon" />
+                    <input
+                      value={repoUrl}
+                      onChange={(e) => setRepoUrl(e.target.value)}
+                      placeholder="https://github.com/owner/repository"
+                      aria-label="GitHub repository URL"
+                      autoFocus
+                    />
+                    <button
+                      type="submit"
+                      disabled={!repoUrl.trim()}
+                      title="Analyze repository"
+                      aria-label="Analyze repository"
+                    >
+                      <ArrowRight size={18} />
+                    </button>
+                  </form>
+                  <p className="tv-form-note">
+                    <ShieldCheck size={13} />
+                    Public repositories · Local scan · Verified graph
+                  </p>
+                </>
+              )}
+            </div>
+
+            {error && <div className="tv-error">{error}</div>}
+
+            {!job && (
+              <ul className="tv-benefits">
+                <li><Network size={15} /><span>Architecture graph</span></li>
+                <li><Zap size={15} /><span>Short repo answers</span></li>
+                <li><ShieldCheck size={15} /><span>Local-first scan</span></li>
+              </ul>
             )}
           </div>
-
-          {!job && (
-            <button
-              type="button"
-              className="landing-recent-projects-btn"
-              onClick={() => setShowRecentProjects(true)}
-            >
-              <Clock3 size={16} />
-              <span>Recent Projects</span>
-              {recentProjects.length > 0 && <strong>{recentProjects.length}</strong>}
-            </button>
-          )}
-
-          {error && <div className="landing-error">{error}</div>}
-
-          {!job && (
-            <div className="landing-benefits">
-              <div><Network size={16} /><span><strong>Architecture graph</strong></span></div>
-              <div><Zap size={16} /><span><strong>Short repo answers</strong></span></div>
-              <div><ShieldCheck size={16} /><span><strong>Local-first scan</strong></span></div>
-            </div>
-          )}
         </main>
 
-        <footer className="landing-footer">
+        <section className="tv-cloud" aria-label="Supported languages">
+          <p className="tv-cloud-label">Scans every language your repo already uses</p>
+          <div className="tv-cloud-row">
+            {LANDING_LANGUAGES.map((language) => (
+              <span className="tv-cloud-chip" key={language.key}>
+                <i aria-hidden="true" />
+                {language.label}
+              </span>
+            ))}
+          </div>
+        </section>
+
+        <footer className="tv-footer">
           <span>Built for developers who need clarity, fast.</span>
-          <div className="developer-badge">
+          <div className="tv-badge">
             CREATED BY <span>GOKUL RAJ</span>
           </div>
         </footer>
@@ -1020,7 +1376,24 @@ function App() {
         <div className="brand">
           <Logo />
         </div>
-        
+
+        {analysis && (
+          <div className="nav-repo-context">
+            <span className="nav-repo-icon"><GitBranch size={14} /></span>
+            <div className="nav-repo-copy">
+              <strong>{analysis.repoName}</strong>
+              <span>
+                {analysis.branch || 'HEAD'} · {analysis.summary?.fileCount || analysis.files?.length || 0} files ·{' '}
+                {analysis.graph?.nodes?.length || 0} nodes
+              </span>
+            </div>
+            <span className={`nav-ai-status ${assistantConfig.apiKey ? 'is-ready' : ''}`}>
+              <span className="nav-ai-dot" />
+              {assistantConfig.apiKey ? 'AI ready' : 'AI offline'}
+            </span>
+          </div>
+        )}
+
         <div className="nav-actions">
           <button className="icon-button" onClick={() => setShowRecentProjects(true)}>
             <Clock3 size={16} />
@@ -1143,7 +1516,7 @@ function App() {
                           <>
                             <div className="filter-header">Categories</div>
                             <div className="filter-list">
-                              {Object.entries(CATEGORY_COLORS).map(([key, color]) => (
+                              {Object.entries(CATEGORY_NODE_COLORS).map(([key, color]) => (
                                 <label key={key} className="filter-item">
                                   <input 
                                     type="checkbox" 
@@ -1163,7 +1536,7 @@ function App() {
                             </div>
                             <div className="filter-actions">
                               <button 
-                                onClick={() => setFilterCategories(Object.keys(CATEGORY_COLORS))}
+                                onClick={() => setFilterCategories(Object.keys(CATEGORY_NODE_COLORS))}
                                 className="filter-action-btn"
                               >
                                 Select All
@@ -1209,23 +1582,35 @@ function App() {
                   <Sparkles size={12} /> Architecture
                   {analysis && <span className="architecture-flow-count">{architectureFlowCount}</span>}
                 </button>
+                <button
+                  className={graphScope === 'health' ? 'active' : ''}
+                  onClick={() => setGraphScope('health')}
+                >
+                  <Activity size={12} /> Health Score
+                </button>
               </div>
-              {graphScope === 'repo' ? (
-                <div className="toggle-group">
-                  <button className={viewMode === '3d' ? 'active' : ''} onClick={() => setViewMode('3d')}>3D</button>
-                  <button className={viewMode === '2d' ? 'active' : ''} onClick={() => setViewMode('2d')}>2D</button>
-                </div>
-              ) : graphScope === 'architecture' ? (
+              {graphScope === 'architecture' ? (
                 <span className="graph-mode-badge architecture-mode-badge">Guided Explorer</span>
-              ) : (
+              ) : graphScope !== 'repo' ? (
                 <span className="graph-mode-badge">3D Only</span>
-              )}
+              ) : null}
+              </div>
+              <button
+                type="button"
+                className="pane-scroll-arrow"
+                onClick={() => scrollToolbar(1)}
+                disabled={!toolbarScroll.canRight}
+                title="Scroll controls right"
+                aria-label="Scroll graph controls right"
+              >
+                <ChevronRight size={16} />
+              </button>
               <div className="graph-utility-actions">
                 <button
-                  className={`icon-button report-download-btn ${reportState.loading ? 'active' : ''}`}
-                  onClick={handleDownloadPdfReport}
+                  className={`icon-button report-download-btn ${reportState.loading || reportState.open ? 'active' : ''}`}
+                  onClick={openPdfReport}
                   disabled={!analysis || reportState.loading}
-                  title="Download repository PDF report"
+                  title="View & download repository PDF report"
                 >
                   {reportState.loading ? <LoaderCircle size={16} className="spin" /> : <FileText size={16} />}
                   {reportState.loading ? 'Generating...' : 'PDF Report'}
@@ -1242,17 +1627,6 @@ function App() {
                   {isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
                 </button>
               </div>
-              </div>
-              <button
-                type="button"
-                className="pane-scroll-arrow"
-                onClick={() => scrollToolbar(1)}
-                disabled={!toolbarScroll.canRight}
-                title="Scroll controls right"
-                aria-label="Scroll graph controls right"
-              >
-                <ChevronRight size={16} />
-              </button>
             </div>
           </div>
           <div className={`graph-container ${isFullscreen ? 'fullscreen' : ''}`}>
@@ -1278,13 +1652,16 @@ function App() {
                 {/* Legend UI */}
                 {graphScope === 'repo' && visibleGraph.languages && visibleGraph.languages.length > 0 && (
                   <div className="graph-legend">
+                    <div className="legend-group-label">
+                      {filterType === 'category' ? 'Colour · category' : 'Colour · language'}
+                    </div>
                     {visibleGraph.languages.map(key => (
                       <div key={key} className="legend-item">
                         <span 
                           className="legend-color" 
                           style={{ 
                             backgroundColor: filterType === 'category' 
-                              ? (CATEGORY_COLORS[key] || CATEGORY_COLORS.unknown)
+                              ? (CATEGORY_NODE_COLORS[key] || CATEGORY_NODE_COLORS.unknown)
                               : (LANGUAGE_COLORS[key] || LANGUAGE_COLORS.unknown)
                           }}
                         ></span>
@@ -1294,6 +1671,39 @@ function App() {
                         }
                       </div>
                     ))}
+                    <div className="legend-group-label">Shape</div>
+                    <div className="legend-item"><span className="legend-shape is-folder"></span>Folder</div>
+                    <div className="legend-item"><span className="legend-shape is-file"></span>File</div>
+                    <div className="legend-item"><span className="legend-shape is-key"></span>Key module</div>
+                    <div className="legend-group-label">Edges</div>
+                    <div className="legend-item"><span className="legend-line is-import"></span>Imports</div>
+                    <div className="legend-item"><span className="legend-line is-contains"></span>Contains</div>
+                  </div>
+                )}
+                {/* View-mode switch lives on the canvas itself, so it stays
+                    reachable when the toolbar scrolls or the pane is narrow. */}
+                {graphScope === 'repo' && (
+                  <div className="graph-view-toggle" role="group" aria-label="Graph view mode">
+                    <button
+                      type="button"
+                      className={viewMode === '3d' ? 'active' : ''}
+                      aria-pressed={viewMode === '3d'}
+                      onClick={() => setViewMode('3d')}
+                      title="3D graph view"
+                    >
+                      <Box size={13} />
+                      3D
+                    </button>
+                    <button
+                      type="button"
+                      className={viewMode === '2d' ? 'active' : ''}
+                      aria-pressed={viewMode === '2d'}
+                      onClick={() => setViewMode('2d')}
+                      title="2D graph view"
+                    >
+                      <Network size={13} />
+                      2D
+                    </button>
                   </div>
                 )}
                 {graphScope === 'architecture' ? (
@@ -1330,8 +1740,15 @@ function App() {
                   ) : commitHistoryState.error ? (
                     <div className="empty-state error"><p>{commitHistoryState.error}</p></div>
                   ) : (
-                    <CommitHistory3D history={commitHistory} />
+                    <CommitGraphPanel history={commitHistory} repoUrl={analysis.repoUrl} />
                   )
+                ) : graphScope === 'health' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 16, height: '100%', overflowY: 'auto' }}>
+                    <HealthScorePanel repoId={analysis?.repoId} />
+                    <div style={{ borderTop: '1px solid rgba(20, 2, 6, 0.06)', paddingTop: 16 }}>
+                      <GitIntelligencePanel repoId={analysis?.repoId} />
+                    </div>
+                  </div>
                 ) : viewMode === '3d' ? (
                   <Graph3D
                     graph={visibleGraph}
@@ -1417,7 +1834,7 @@ function App() {
               ) : (
                 <Editor
                   height="100%"
-                  theme="vs-dark"
+                  theme="vs"
                   language={fileState.data?.language || 'plaintext'}
                   value={fileState.data?.content || ''}
                   options={{
@@ -1437,26 +1854,128 @@ function App() {
             </div>
           </div>
 
-          {isChatOpen ? (
+          {isChatOpen ? (() => {
+            // `.right-pane` is its own stacking context (`z-index: 2`,
+            // `overflow: hidden`), so a `position: fixed` child would be
+            // positioned and clipped against that pane instead of the viewport —
+            // which is exactly why the expanded panel looked cramped on a
+            // laptop. Portalling it to <body> puts it in the real viewport.
+            const surface = (
             <>
-              <div className="chat-resizer" onMouseDown={beginChatResize} role="separator" aria-label="Resize chat panel" />
-              <div className="ai-panel" style={{ height: `${chatPanelHeight}px`, flex: '0 0 auto' }}>
-              <div className="pane-header">
-                <h3>Ask this repo</h3>
+              {isChatExpanded && (
+                <div
+                  className="chat-backdrop"
+                  onClick={() => setIsChatExpanded(false)}
+                  aria-hidden="true"
+                />
+              )}
+              {!isChatExpanded && (
+                <div className="chat-resizer" onMouseDown={beginChatResize} role="separator" aria-label="Resize chat panel" />
+              )}
+              <div
+                className={`ai-panel ${isChatExpanded ? 'is-expanded' : ''}`}
+                style={isChatExpanded ? undefined : { height: `${chatPanelHeight}px`, flex: '0 0 auto' }}
+              >
+              <div className="chat-header">
+                <div className="chat-header-identity">
+                  <span className="chat-header-orb" aria-hidden="true">
+                    <span className="assistant-wave-bar" />
+                    <span className="assistant-wave-bar" />
+                    <span className="assistant-wave-bar" />
+                  </span>
+                  <div className="chat-header-copy">
+                    <strong>Aliya AI</strong>
+                    <span>
+                      {assistantConfig.apiKey
+                        ? `${activeProviderInfo?.label || activeProvider} · ${effectiveModel || 'default'}`
+                        : 'Connect an API key to start'}
+                    </span>
+                  </div>
+                </div>
                 <div className="inspector-controls">
-                  <button className="toolbar-btn" onClick={() => setMessages([{ role: 'assistant', content: 'Analyze a repository to ask questions about its architecture and codebase.' }])} title="Clear chat">
+                  <button
+                    className={`toolbar-btn ${isChatExpanded ? 'active' : ''}`}
+                    onClick={() => setIsChatExpanded((value) => !value)}
+                    title={isChatExpanded ? 'Collapse to dock' : 'Expand to a full panel'}
+                    aria-label={isChatExpanded ? 'Collapse chat panel' : 'Expand chat panel'}
+                  >
+                    {isChatExpanded ? <Minimize size={14} /> : <Maximize size={14} />}
+                  </button>
+                  <button className="toolbar-btn" onClick={clearChat} title="Clear chat">
                     <Trash2 size={14} />
                   </button>
-                  <button className="toolbar-btn" onClick={() => setIsChatOpen(false)} title="Close chat">
+                  <button
+                    className="toolbar-btn"
+                    onClick={() => { setIsChatOpen(false); setIsChatExpanded(false) }}
+                    title="Close chat"
+                  >
                     <X size={14} />
                   </button>
                 </div>
               </div>
               <div className="chat-messages" ref={chatMessagesRef}>
+                {messages.length === 0 && !aiBusy && (
+                  <div className="chat-empty">
+                    <div className="chat-empty-head">
+                      <span className="chat-empty-orb" aria-hidden="true"><Sparkles size={16} /></span>
+                      <div>
+                        <strong>Ask anything about this repository</strong>
+                        <span>
+                          Answers cite the files they rest on and say what could not be verified.
+                        </span>
+                      </div>
+                    </div>
+                    <div className="chat-empty-grid">
+                      {STARTER_PROMPTS.map((prompt) => (
+                        <button
+                          key={prompt.label}
+                          type="button"
+                          className="chat-empty-card"
+                          onClick={() => submitQuestion(prompt.question)}
+                          disabled={!assistantConfig.apiKey || !analysis}
+                        >
+                          <strong>{prompt.label}</strong>
+                          <span>{prompt.hint}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {messages.map((m, i) => (
                   <ChatMessage key={i} message={m} onCopy={copyMessageContent} />
                 ))}
-                {aiBusy && <div className="chat-bubble assistant"><div className="chat-content"><LoaderCircle className="spin" size={14} /></div></div>}
+                {aiBusy && (
+                  <div className="chat-bubble assistant">
+                    <span className="chat-avatar" aria-hidden="true"><Sparkles size={13} /></span>
+                    <div className="chat-content-wrap">
+                      <div className="chat-content">
+                        {streamingText ? (
+                          <>
+                            <ChatMarkdown content={streamingText} />
+                            <span className="chat-streaming-caret" aria-hidden="true" />
+                          </>
+                        ) : (
+                          <div className="chat-thinking">
+                            <span className="chat-thinking-dots"><i /><i /><i /></span>
+                            <em>Reading the codebase…</em>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {!aiBusy && followUps.length > 0 && (
+                  <div className="chat-followups">
+                    <span className="chat-followups-label"><Lightbulb size={12} /> Ask next</span>
+                    <div className="chat-followups-list">
+                      {followUps.map((prompt) => (
+                        <button key={prompt} type="button" onClick={() => submitQuestion(prompt)}>
+                          {prompt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="chat-input-area">
                 <div className="quick-actions">
@@ -1478,18 +1997,23 @@ function App() {
                         submitQuestion(question)
                       }
                     }}
-                    placeholder={assistantConfig.apiKey ? "Ask about the code..." : "Connect AI key to ask questions"} 
+                    placeholder={assistantConfig.apiKey ? "Ask about the code…" : "Connect AI key to ask questions"} 
                     disabled={!assistantConfig.apiKey}
                     rows={chatInputRows}
                   />
-                  <button type="submit" disabled={aiBusy || !analysis || !assistantConfig.apiKey || !question.trim()}>
+                  <button type="submit" disabled={aiBusy || !analysis || !assistantConfig.apiKey || !question.trim()} title="Send (Enter)">
                     <Sparkles size={16} />
                   </button>
                 </form>
+                <div className="chat-input-hint">
+                  <CornerDownLeft size={11} /> Enter to send · Shift + Enter for a new line
+                </div>
               </div>
               </div>
             </>
-          ) : (
+            )
+            return isChatExpanded ? createPortal(surface, document.body) : surface
+          })() : (
             <div className="chat-collapsed">
               <button className="open-chat-btn" onClick={() => setIsChatOpen(true)} title="Open Aliya AI assistant" aria-label="Open Aliya AI assistant">
                 <span className="open-chat-orb" aria-hidden="true">
@@ -1611,6 +2135,19 @@ function App() {
           </div>
         </div>
       )}
+
+      <PdfReportViewer
+        open={reportState.open}
+        url={reportState.url}
+        filename={reportState.filename}
+        size={reportState.size}
+        generating={reportState.loading}
+        error={reportState.error}
+        onClose={closePdfViewer}
+        onDownload={downloadPdfReport}
+        onOpenInTab={openPdfReportInTab}
+        onRegenerate={handleDownloadPdfReport}
+      />
     </div>
   )
 }

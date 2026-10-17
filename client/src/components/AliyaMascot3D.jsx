@@ -5,9 +5,9 @@ function makeTextSprite(text, {
   width = 512,
   height = 180,
   font = '700 64px Inter, Arial, sans-serif',
-  color = '#f8fafc',
-  background = 'rgba(10, 12, 16, 0.64)',
-  border = 'rgba(255,255,255,0.16)',
+  color = '#140206',
+  background = 'rgba(251, 248, 241, 0.70)',
+  border = 'rgba(20, 2, 6, 0.16)',
 } = {}) {
   const canvas = document.createElement('canvas')
   canvas.width = width
@@ -185,9 +185,9 @@ export function AliyaMascot3D() {
       width: 260,
       height: 160,
       font: '800 82px Inter, Arial, sans-serif',
-      color: '#101217',
-      background: 'rgba(248,250,252,0.9)',
-      border: 'rgba(255,255,255,0.35)',
+      color: '#140206',
+      background: 'rgba(251,248,241,0.92)',
+      border: 'rgba(20, 2, 6, 0.35)',
     })
     hiSprite.position.set(1.0, 1.28, 0.18)
     hiSprite.scale.set(0.54, 0.33, 1)
@@ -197,8 +197,8 @@ export function AliyaMascot3D() {
       width: 520,
       height: 150,
       font: '800 58px Inter, Arial, sans-serif',
-      color: '#f8fafc',
-      background: 'rgba(12,14,18,0.68)',
+      color: '#140206',
+      background: 'rgba(251, 248, 241, 0.74)',
       border: 'rgba(142,220,243,0.22)',
     })
     nameSprite.position.set(0, -1.22, 0.2)

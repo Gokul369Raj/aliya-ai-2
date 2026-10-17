@@ -1,13 +1,24 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useCallback } from 'react'
 import cytoscape from 'cytoscape'
 import fcose from 'cytoscape-fcose'
 import { Maximize, ZoomIn, ZoomOut, Target } from 'lucide-react'
+import { VIZ_PALETTE } from '../graph-utils'
+import { GraphNodeReadout } from './GraphNodeReadout'
 
 cytoscape.use(fcose)
 
+/* Structure is encoded in the shape, language in the colour:
+     folder  → rounded square   file → circle   key module → diamond
+   The legend in App.jsx explains the same key. */
 function nodeShape(nodeType) {
   if (nodeType === 'folder') return 'round-rectangle'
   return nodeType === 'important' ? 'diamond' : 'ellipse'
+}
+
+function edgeClass(type) {
+  if (type === 'dependency') return 'dependency'
+  if (type === 'hierarchy') return 'hierarchy'
+  return 'semantic'
 }
 
 export function Graph2D({
@@ -20,28 +31,54 @@ export function Graph2D({
   const containerRef = useRef(null)
   const cyRef = useRef(null)
 
+  // The cytoscape instance must only be rebuilt when the graph itself changes,
+  // so the callbacks are read through refs rather than listed as dependencies —
+  // an inline handler in the parent would otherwise tear the graph down on
+  // every render and reshuffle the layout.
+  const onHoverRef = useRef(onHover)
+  const onSelectRef = useRef(onSelect)
+  useEffect(() => { onHoverRef.current = onHover }, [onHover])
+  useEffect(() => { onSelectRef.current = onSelect }, [onSelect])
+
+  const nodeById = useMemo(() => {
+    const map = new Map()
+    graph.nodes.forEach((node) => map.set(node.id, node))
+    return map
+  }, [graph])
+
+  const connectionCounts = useMemo(() => {
+    const counts = new Map()
+    graph.edges.forEach((edge) => {
+      counts.set(edge.source, (counts.get(edge.source) || 0) + 1)
+      counts.set(edge.target, (counts.get(edge.target) || 0) + 1)
+    })
+    return counts
+  }, [graph])
+
   // Initialize and update graph nodes/edges
   useEffect(() => {
     if (!containerRef.current || graph.nodes.length === 0) return
 
+    const colorById = new Map()
+    graph.nodes.forEach((node) => {
+      colorById.set(node.id, node.color || VIZ_PALETTE.neutral)
+    })
+
     const nodes = graph.nodes.map((node) => {
-      // Make important nodes larger
-      const baseScale = node.type === 'important' ? 1.4 : 1.0;
-      const size = Math.max(12, (node.renderedSize || node.size || 12)) * baseScale;
+      // Important nodes read as the hubs of the map.
+      const baseScale = node.type === 'important' ? 1.4 : 1.0
+      const size = Math.max(12, (node.renderedSize || node.size || 12)) * baseScale
       return {
         data: {
           id: node.id,
           label: node.label,
           path: node.path || node.label,
           type: node.type,
-          size: size,
-          color: node.color || '#ededed',
+          size,
+          color: node.color || VIZ_PALETTE.neutral,
           shape: nodeShape(node.type),
-          // Important nodes have slight glow via shadow
-          shadowBlur: node.type === 'important' ? 12 : 0,
-          shadowOpacity: node.type === 'important' ? 0.6 : 0,
         },
-        classes: node.type,
+        classes: [node.type, node.status].filter(Boolean).join(' '),
       }
     })
 
@@ -51,14 +88,17 @@ export function Graph2D({
         source: edge.source,
         target: edge.target,
         type: edge.type,
+        // Dependency edges inherit the *source* colour so a file's imports can
+        // be traced by eye without hovering every one of them.
+        color: colorById.get(edge.source) || VIZ_PALETTE.blue,
       },
-      classes: edge.type,
+      classes: edgeClass(edge.type),
     }))
 
     const cy = cytoscape({
       container: containerRef.current,
-      minZoom: 0.2,
-      maxZoom: 3,
+      minZoom: 0.15,
+      maxZoom: 4,
       wheelSensitivity: 0.2,
       elements: [...nodes, ...edges],
       style: [
@@ -67,114 +107,176 @@ export function Graph2D({
           style: {
             label: 'data(label)',
             'font-size': 10,
-            color: '#a1a1aa',
-            'text-background-color': '#0a0a0a',
+            'font-weight': 600,
+            'font-family': 'JetBrains Mono, ui-monospace, monospace',
+            color: '#111111',
+            // Neo-brutalist labels: ink text on an opaque white pill with an
+            // ink outline, matching the cards everywhere else in the app.
+            'text-background-color': '#ffffff',
             'text-background-opacity': 1,
-            'text-background-padding': 2,
+            'text-background-padding': 3,
+            'text-border-width': 1,
+            'text-border-color': '#111111',
+            'text-border-opacity': 1,
             'text-valign': 'bottom',
             'text-margin-y': 4,
+            'text-max-width': '92px',
+            'text-wrap': 'ellipsis',
+            'text-overflow-wrap': 'anywhere',
+            // The single biggest readability win on a 300-node map: labels that
+            // would render below 6px are dropped instead of smearing together.
+            'min-zoomed-font-size': 6,
             width: 'data(size)',
             height: 'data(size)',
             shape: 'data(shape)',
             'background-color': 'data(color)',
-            'border-width': 1,
-            'border-color': '#2a2a2a',
-            'shadow-blur': 'data(shadowBlur)',
-            'shadow-color': 'data(color)',
-            'shadow-opacity': 'data(shadowOpacity)',
+            'background-opacity': 1,
+            'border-width': 2,
+            'border-color': '#111111',
+            'border-opacity': 1,
+            'z-index': 10,
           },
         },
         {
+          selector: 'node.folder',
+          style: { 'border-width': 2 },
+        },
+        {
+          selector: 'node.important',
+          style: { 'border-width': 3, 'z-index': 20 },
+        },
+        {
+          // Dead code: dashed ink outline instead of a colour change, so the
+          // language colour still reads.
+          selector: 'node.dead',
+          style: { 'border-style': 'dashed', 'border-color': '#57534a' },
+        },
+        {
+          selector: 'node.broken',
+          style: { 'border-color': '#b91c1c', 'border-width': 3, 'z-index': 22 },
+        },
+        {
+          // Focus mode: everything outside the selected neighbourhood becomes a
+          // ghost. Still present as context, impossible to confuse with the
+          // thing you actually clicked.
           selector: 'node.dimmed',
-          style: { opacity: 0.2 },
+          style: { opacity: 0.08, 'z-index': 1 },
+        },
+        {
+          selector: 'node.linked',
+          style: { 'border-width': 3, 'z-index': 18 },
         },
         {
           selector: 'node.selected',
           style: {
-            'border-width': 2,
-            'border-color': '#ffffff',
-            color: '#ffffff',
+            'border-width': 3,
+            'border-color': '#111111',
+            'overlay-color': '#111111',
+            'overlay-opacity': 0.14,
+            'overlay-padding': 9,
+            'z-index': 40,
           },
         },
         {
           selector: 'node.hovered',
           style: {
-            'border-width': 2,
-            'border-color': '#ffffff',
+            'border-width': 3,
+            'border-color': '#111111',
+            'overlay-color': '#111111',
+            'overlay-opacity': 0.08,
+            'overlay-padding': 7,
+            'z-index': 35,
           },
         },
         {
           selector: 'edge',
           style: {
             width: 1,
-            'line-color': '#3b82f6', // Initial Blue
-            'target-arrow-color': '#3b82f6',
+            'line-color': 'data(color)',
+            'target-arrow-color': 'data(color)',
+            'target-arrow-shape': 'triangle',
+            'arrow-scale': 0.7,
             'curve-style': 'bezier',
-            opacity: 0.6,
+            opacity: 0.4,
+            'z-index': 2,
+          },
+        },
+        {
+          // "contains" — folder structure, not a real import. Kept faint and
+          // arrow-less so the dependency graph stays the thing you read.
+          selector: 'edge.hierarchy',
+          style: {
+            'line-style': 'dashed',
+            'line-color': '#b8b0a2',
+            'target-arrow-shape': 'none',
+            width: 1,
+            opacity: 0.5,
+            'z-index': 1,
           },
         },
         {
           selector: 'edge.dependency',
-          style: {
-            'line-style': 'dashed',
-            'line-color': '#3b82f6', // Initial Blue
-            'target-arrow-color': '#3b82f6',
-          },
+          style: { 'line-style': 'solid', opacity: 0.5, 'z-index': 3 },
         },
         {
+          selector: 'edge.semantic',
+          style: { 'line-style': 'dotted', opacity: 0.45, 'z-index': 3 },
+        },
+        {
+          // The traced neighbourhood is redrawn in ink so the path is
+          // unmistakable against the coloured field.
           selector: 'edge.linked',
           style: {
-            width: 2,
-            opacity: 0.9,
-          },
-        },
-        {
-          selector: 'edge.linked.dependency',
-          style: {
-            'line-color': '#ef4444', // Red Highlight
-            'target-arrow-color': '#ef4444',
-          },
-        },
-        {
-          selector: 'edge.linked:not(.dependency)',
-          style: {
-            'line-color': '#ef4444', // Red Highlight
-            'target-arrow-color': '#ef4444',
+            'line-color': '#111111',
+            'target-arrow-color': '#111111',
+            'line-style': 'solid',
+            width: 2.4,
+            opacity: 1,
+            'arrow-scale': 1,
+            'z-index': 30,
           },
         },
         {
           selector: 'edge.dimmed',
-          style: { opacity: 0.15 },
-        }
+          style: { opacity: 0.04, 'z-index': 1 },
+        },
       ],
     })
 
     cy.on('tap', 'node', (event) => {
       const node = event.target
       if (!node || typeof node.id !== 'function') return
-      onSelect(node.id())
+      onSelectRef.current(node.id())
     })
-    
+
     cy.on('mouseover', 'node', (event) => {
       const node = event.target
       if (!node || typeof node.id !== 'function') return
-      onHover(node.id())
+      onHoverRef.current(node.id())
     })
-    
+
     cy.on('mouseout', 'node', () => {
-      onHover('')
+      onHoverRef.current('')
     })
 
     cy.layout({
       name: 'fcose',
       animate: false,
       fit: true,
-      padding: 40,
-      nodeRepulsion: 8000,
-      idealEdgeLength: (edge) => (edge.data('type') === 'dependency' ? 80 : 50),
-      gravity: 0.2,
-      numIter: 1000,
-      randomize: true,
+      padding: 46,
+      // `randomize: false` keeps the map stable between renders — a layout that
+      // reshuffles on every mount is impossible to build a mental model of.
+      randomize: false,
+      quality: 'default',
+      // Reserving room for the label pills is what stops 300 names overlapping.
+      nodeDimensionsIncludeLabels: true,
+      nodeRepulsion: 12000,
+      idealEdgeLength: (edge) => (edge.data('type') === 'dependency' ? 100 : 65),
+      gravity: 0.22,
+      nodeSeparation: 110,
+      packComponents: true,
+      tile: true,
+      numIter: 800,
     }).run()
 
     cyRef.current = cy
@@ -207,7 +309,7 @@ export function Graph2D({
       if (node.length) {
         node.addClass('hovered')
         if (!selectedNodeId) {
-          // Add soft highlight to neighbors without dimming the rest completely
+          // Highlight the neighbourhood without blacking out the rest.
           node.closedNeighborhood().addClass('linked')
         }
       }
@@ -215,7 +317,7 @@ export function Graph2D({
   }, [selectedNodeId, hoveredNodeId])
 
   const handleResetView = useCallback(() => {
-    if (cyRef.current) cyRef.current.fit(null, 40)
+    if (cyRef.current) cyRef.current.fit(null, 46)
   }, [])
 
   const handleZoomIn = useCallback(() => {
@@ -241,41 +343,43 @@ export function Graph2D({
       const node = cyRef.current.getElementById(selectedNodeId)
       if (node.length) {
         cyRef.current.animate({
-          fit: { eles: node.closedNeighborhood(), padding: 50 },
+          fit: { eles: node.closedNeighborhood(), padding: 60 },
           duration: 300
         })
       }
     }
   }, [selectedNodeId])
 
+  const readoutNode = nodeById.get(hoveredNodeId) || nodeById.get(selectedNodeId)
+
   return (
-    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      <div ref={containerRef} style={{ width: '100%', height: '100%', background: 'transparent' }} />
-      <div style={{
-        position: 'absolute',
-        bottom: '16px',
-        right: '16px',
-        display: 'flex',
-        gap: '8px',
-        zIndex: 10,
-      }}>
+    <div className="graph-2d-shell">
+      <div ref={containerRef} className="graph-2d-canvas" />
+
+      <GraphNodeReadout
+        node={readoutNode}
+        connectionCount={readoutNode ? connectionCounts.get(readoutNode.id) : undefined}
+      />
+
+      <div className="graph-controls" aria-label="Repository graph controls">
         {selectedNodeId && (
-          <button 
+          <button
             onClick={handleFocusSelected}
             className="graph-control-btn"
-            title="Focus Selected"
+            title="Focus selected neighbourhood"
+            aria-label="Focus selected neighbourhood"
           >
             <Target size={14} />
           </button>
         )}
-        <div style={{ display: 'flex', background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: '6px', overflow: 'hidden', boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }}>
-          <button onClick={handleZoomIn} className="graph-control-btn border-right" title="Zoom In">
+        <div className="graph-control-cluster">
+          <button onClick={handleZoomIn} className="graph-control-btn border-right" title="Zoom in" aria-label="Zoom in">
             <ZoomIn size={14} />
           </button>
-          <button onClick={handleResetView} className="graph-control-btn border-right" title="Reset View">
+          <button onClick={handleResetView} className="graph-control-btn border-right" title="Fit graph to view" aria-label="Fit graph to view">
             <Maximize size={14} />
           </button>
-          <button onClick={handleZoomOut} className="graph-control-btn" title="Zoom Out">
+          <button onClick={handleZoomOut} className="graph-control-btn" title="Zoom out" aria-label="Zoom out">
             <ZoomOut size={14} />
           </button>
         </div>

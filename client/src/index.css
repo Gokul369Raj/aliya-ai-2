@@ -1,34 +1,72 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Instrument+Serif:ital@0;1&display=swap');
 
+/* ==========================================================================
+   NEO-BRUTALIST TOKENS
+   Hard ink borders, flat paper surfaces, zero radius, offset "sticker" shadows.
+   The page keeps the warm paper canvas the contrast tests are tuned against;
+   panels are pure white so every card reads as a raised sheet.
+   ========================================================================== */
 :root {
-  color-scheme: dark;
-  --bg-app: #030303;
-  --bg-panel: rgba(15, 15, 15, 0.6);
-  --bg-hover: rgba(255, 255, 255, 0.05);
-  --bg-input: rgba(20, 20, 20, 0.8);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.15);
-  
-  --text-primary: #f4f4f5;
-  --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
-  
-  --accent: #5bc0de;
-  --accent-glow: rgba(91, 192, 222, 0.4);
-  --accent-fg: #000;
-  
+  color-scheme: light;
+
+  /* Structural ink + paper */
+  --ink: #111111;
+  --ink-soft: #4a453d;
+  --paper: #f3eee7;
+  --card: #ffffff;
+  --text-invert: #fffdf6;
+
+  --bg-app: #f3eee7;
+  --bg-panel: #ffffff;
+  --bg-hover: #ffe9a3;
+  --bg-input: #ffffff;
+  --bg-inset: #e8e2d3;
+
+  /* Borders are ink now, not a faint wash — that is the whole aesthetic. */
+  --border: #111111;
+  --border-hover: #111111;
+  --border-soft: rgba(17, 17, 17, 0.18);
+  --border-w: 2px;
+
+  --text-primary: #111111;
+  --text-secondary: #4a453d;
+  --text-muted: #6b6559;
+
+  --accent: #0cb531;
+  /* Green *text* on a light surface — the neon --accent is 2.37:1 on paper. */
+  --accent-text: #0a6b22;
+  --accent-secondary: #ff5c8a;
+  --accent-glow: rgba(12, 181, 49, 0.32);
+  --accent-fg: #111111;
+
+  /* Solid offset shadows — no blur anywhere in this theme. */
+  --shadow-hard-sm: 2px 2px 0 var(--ink);
+  --shadow-hard: 4px 4px 0 var(--ink);
+  --shadow-hard-lg: 6px 6px 0 var(--ink);
+  --elevation-sm: 2px 2px 0 var(--ink);
+  --elevation-md: 4px 4px 0 var(--ink);
+  --elevation-lg: 6px 6px 0 var(--ink);
+  --elevation-xl: 8px 8px 0 var(--ink);
+
+  --glass-bg: #ffffff;
+  --glass-border: #111111;
+
+  --transition-fast: 0.12s ease;
+  --transition-smooth: 0.16s ease;
+
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-full: 0px;
+
   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  --display: 'Outfit', var(--sans);
-  
+  --display: 'Space Grotesk', 'Outfit', var(--sans);
+
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.5;
   background: var(--bg-app);
-  background-image: 
-    radial-gradient(circle at 0% 0%, rgba(49, 120, 198, 0.05), transparent 50%),
-    radial-gradient(circle at 100% 100%, rgba(91, 192, 222, 0.05), transparent 50%);
-  background-attachment: fixed;
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
 }
@@ -48,13 +86,6 @@ html, body, #root {
   color: var(--text-primary);
 }
 
-body {
-  background-image:
-    radial-gradient(circle at 0% 0%, rgba(49, 120, 198, 0.05), transparent 50%),
-    radial-gradient(circle at 100% 100%, rgba(91, 192, 222, 0.05), transparent 50%);
-  background-attachment: fixed;
-}
-
 button {
   background: transparent;
   border: none;
@@ -66,24 +97,36 @@ button {
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
-input, select {
+input, select, textarea {
   font-family: inherit;
   background: var(--bg-input);
-  border: 1px solid var(--border);
+  border: var(--border-w) solid var(--border);
   color: var(--text-primary);
   outline: none;
-  padding: 6px 12px;
-  border-radius: 6px;
+  padding: 7px 12px;
+  border-radius: 0;
   font-size: 13px;
-  transition: border 0.2s;
+  transition: box-shadow var(--transition-fast), background var(--transition-fast);
 }
 
-input:focus, select:focus {
-  border-color: var(--border-hover);
+input:focus, select:focus, textarea:focus {
+  border-color: var(--ink);
+  box-shadow: var(--shadow-hard-sm);
+}
+
+/* Placeholders must stay legible without being mistaken for real values. */
+input::placeholder, textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+select option {
+  background: var(--bg-panel);
+  color: var(--text-primary);
 }
 
 h1, h2, h3, h4, p {
@@ -98,16 +141,18 @@ h1, h2, h3, h4, p {
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 12px;
+  height: 12px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--bg-inset);
+  border-left: var(--border-w) solid var(--border);
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
+  background: var(--ink);
+  border: 3px solid var(--bg-inset);
+  border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--border-hover);
+  background: var(--accent-text);
 }

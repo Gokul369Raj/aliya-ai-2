@@ -10,17 +10,18 @@
     "package.json"
   ],
   "bin": {
-    "aliya-ai": "./bin/aliya-ai.js"
+    "aliya-ai": "./bin/cli.js"
   },
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node server/index.js",
+    "start": "node bin/cli.js serve",
+    "dev": "node scripts/dev.js",
     "build": "npm run build --prefix client",
-    "preview": "npm run build && node server/index.js",
-    "postinstall": "node scripts/ensure-deps.js",
-    "dev": "node scripts/dev.js"
+    "preview": "npm run build && node bin/cli.js serve",
+    "postinstall": "node bin/cli.js prepare",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "cors": "^2.8.5",

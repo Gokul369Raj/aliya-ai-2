@@ -3,6 +3,7 @@ const path = require('path');
 
 const simpleGit = require('simple-git');
 const { buildArchitectureIntelligence } = require('./architecture-intelligence');
+const { buildCodeIntelligence } = require('./code-intelligence');
 
 const {
   DEFAULT_VISIBLE_NODE_LIMIT,
@@ -15,6 +16,7 @@ const {
   REPOS_ROOT,
   TEXT_FILE_EXTENSIONS,
 } = require('./constants');
+const { buildSearchIndex } = require('./search-index');
 
 const CODE_FILE_EXTENSIONS = new Set([
   '.c',
@@ -510,12 +512,15 @@ async function scanRepository(repoPath, repoName, reportProgress) {
 function extractProjectDescription(readme, repoName, narrative) {
   if (!readme) return narrative;
 
-  // Remove badges, links, and images which often appear at the top
+  // Remove badges, links, and images which often appear at the top.
+  // Link TEXT is part of the sentence, so keep it and drop only the URL —
+  // deleting the whole link turned "refer to the [README](…) for setup" into
+  // "refer to the  for setup".
   const cleanReadme = readme
-    .replace(/\[!\[.*?\]\(.*?\)\]\(.*?\)/g, '') // Badges with links
+    .replace(/\[!\[.*?\]\(.*?\)\]\(.*?\)/g, '') // Badge images
     .replace(/!\[.*?\]\(.*?\)/g, '') // Images
-    .replace(/\[.*?\]\(.*?\)/g, '') // Links
-    .replace(/<.*?>/g, '') // HTML tags
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // Links → keep the visible text
+    .replace(/<[^>]*>/g, ' ') // HTML tags
     .split('\n')
     .map(line => line.trim())
     .filter(line => line.length > 0);
@@ -549,6 +554,7 @@ function buildGraph({ files, folderNodes, structure, externalDependencies, rootM
   const edgeKeySet = new Set();
   const edges = [];
   const architecture = buildArchitectureIntelligence(files, repoName);
+  const codeIntelligence = buildCodeIntelligence(files);
   const nodeAnnotations = architecture.nodeAnnotations || {};
 
   const pushEdge = (source, target, type) => {
@@ -680,6 +686,7 @@ function buildGraph({ files, folderNodes, structure, externalDependencies, rootM
   const narrative = createNarrative(repoName, rootManifest, rootReadme, languageBreakdown, topFolders);
 
   return {
+    codeIntelligence: codeIntelligence.summary,
     graph: {
       nodes: nodes.map((node) => ({
         id: node.id,
@@ -754,7 +761,12 @@ async function analyzeRepository(repoUrl, reportProgress) {
     repoName: validated.repoName,
   });
 
-  reportProgress('building-graph', 94, 'Finalizing repository model');
+  reportProgress('building-graph', 94, 'Building search index for RAG');
+  
+  // Build search index for RAG (TF-IDF keyword scoring + file signatures)
+  const searchIdx = buildSearchIndex(scanResult.files, analysis);
+  
+  reportProgress('building-graph', 97, 'Finalizing repository model');
   
   const runFlow = await getRunFlow(repoCachePath);
 
@@ -769,6 +781,7 @@ async function analyzeRepository(repoUrl, reportProgress) {
       ...analysis,
     },
     repoPath: repoCachePath,
+    searchIndex: searchIdx,
   };
 }
 
@@ -799,8 +812,67 @@ function parseGitLogRecord(record) {
   };
 }
 
+// Repos we already tried (and failed) to deepen — avoids hammering the network
+// with a slow fetch every time the commit graph is opened while offline.
+const deepenAttempts = new Map();
+const DEEPEN_COOLDOWN_MS = 5 * 60 * 1000;
+const DEEPEN_FETCH_TIMEOUT_MS = 45_000;
+
+/**
+ * Repositories are cloned with `--depth 1` so the initial scan stays fast.
+ * That leaves only one commit locally, which makes the commit graph useless.
+ * When commit history is requested we lazily deepen the clone — fetching only
+ * commits and trees (no blobs) where the server supports partial clone.
+ */
+async function ensureCommitDepth(repoPath, limit) {
+  try {
+    const shallowPath = path.join(repoPath, '.git', 'shallow');
+    const isShallow = await fs
+      .access(shallowPath)
+      .then(() => true)
+      .catch(() => false);
+
+    const git = simpleGit(repoPath);
+    const localCount = await git
+      .raw(['rev-list', '--count', 'HEAD'])
+      .then((value) => Number(String(value).trim()) || 0)
+      .catch(() => 0);
+
+    if (!isShallow || localCount >= limit) {
+      deepenAttempts.delete(repoPath);
+      return { deepened: false, shallow: isShallow, count: localCount };
+    }
+
+    const lastAttempt = deepenAttempts.get(repoPath) || 0;
+    if (Date.now() - lastAttempt < DEEPEN_COOLDOWN_MS) {
+      return { deepened: false, shallow: true, count: localCount };
+    }
+    deepenAttempts.set(repoPath, Date.now());
+
+    const deepenBy = Math.max(1, limit - localCount);
+    const fetchGit = simpleGit(repoPath, { timeout: { block: DEEPEN_FETCH_TIMEOUT_MS } });
+    try {
+      // Blobless fetch keeps the transfer small — we only need commit metadata.
+      await fetchGit.raw(['fetch', '--deepen', String(deepenBy), '--filter=blob:none', '--no-tags']);
+    } catch {
+      await fetchGit.raw(['fetch', '--deepen', String(deepenBy), '--no-tags']);
+    }
+
+    const nextCount = await git
+      .raw(['rev-list', '--count', 'HEAD'])
+      .then((value) => Number(String(value).trim()) || 0)
+      .catch(() => localCount);
+
+    if (nextCount >= limit) deepenAttempts.delete(repoPath);
+    return { deepened: nextCount > localCount, shallow: nextCount < limit, count: nextCount };
+  } catch {
+    return { deepened: false, shallow: true, count: 0 };
+  }
+}
+
 async function getCommitHistory(repoPath, limit = 150) {
   const safeLimit = Math.max(1, Math.min(150, Number(limit) || 150));
+  const depth = await ensureCommitDepth(repoPath, safeLimit);
   const git = simpleGit(repoPath);
   const output = await git.raw([
     'log',
@@ -825,6 +897,9 @@ async function getCommitHistory(repoPath, limit = 150) {
     commits,
     authors,
     files,
+    shallow: Boolean(depth?.shallow),
+    availableCommits: depth?.count || commits.length,
+    deepened: Boolean(depth?.deepened),
     generatedAt: new Date().toISOString(),
   };
 }
@@ -849,8 +924,27 @@ function stripMarkdown(text) {
 
 function labelForCommand(command) {
   const lower = command.toLowerCase();
+
   if (/git\s+clone/.test(lower)) return 'Clone the repository';
-  if (/^(cd|pushd)\s+/.test(lower)) return 'Navigate to project folder';
+
+  // Include the target so three navigation steps do not all read
+  // "Navigate to project folder".
+  if (/^(cd|pushd)\s+/.test(lower)) {
+    const target = command
+      .replace(/^(cd|pushd)\s+/i, '')
+      .replace(/^["']|["']$/g, '')
+      .trim();
+    if (!target || /^\.\.(\/|\\|$)/.test(target)) return 'Go back up a level';
+    return `Navigate into ${target}`;
+  }
+
+  // Name the package so multiple installs stay distinguishable.
+  const namedInstall = command.match(/^(npm|pnpm|yarn)\s+(?:install|i|add)\s+(?:-g\s+|--global\s+)?(.+)$/i);
+  if (namedInstall) {
+    const isGlobal = /(^|\s)(-g|--global)(\s|$)/i.test(command);
+    return `Install ${namedInstall[2].trim()}${isGlobal ? ' globally' : ''}`;
+  }
+
   if (/(npm|pnpm|yarn)\s+(install|i)\b/.test(lower) || /pip\s+install|bundle\s+install|composer\s+install|cargo\s+build|go\s+mod\s+download/.test(lower)) return 'Install dependencies';
   if (/cp\s+.*\.env|\.env|export\s+\w+=/.test(lower)) return 'Configure environment variables';
   if (/(npm|pnpm|yarn)\s+run\s+(dev|serve)|npm\s+start|pnpm\s+start|yarn\s+start|vite|next\s+dev|node\s+.*server|python\s+.*app|flask\s+run|uvicorn|docker\s+compose\s+up|docker-compose\s+up/.test(lower)) return 'Run the application';
@@ -976,8 +1070,93 @@ async function getRunFlow(repoPath) {
   return { ...flow, found: true };
 }
 
+/**
+ * Read source files from a local clone in the shape the architecture detector
+ * expects. Used to recompute architecture without re-cloning the repository.
+ */
+async function readSourceFiles(rootPath) {
+  const files = [];
+
+  const walk = async (dir, relative) => {
+    if (files.length >= MAX_SCANNED_FILES) return;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (files.length >= MAX_SCANNED_FILES) return;
+      if (IGNORED_DIRECTORY_NAMES.has(entry.name) || IGNORED_FILE_NAMES.has(entry.name)) continue;
+
+      const nextRelative = normalizePathSegments(path.join(relative, entry.name));
+      const absolute = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        await walk(absolute, nextRelative);
+        continue;
+      }
+      if (!isLikelyTextFile(nextRelative)) continue;
+
+      let stats;
+      try {
+        stats = await fs.stat(absolute);
+      } catch {
+        continue;
+      }
+      if (stats.size > MAX_TEXT_FILE_BYTES) continue;
+
+      let content = '';
+      try {
+        content = await fs.readFile(absolute, 'utf8');
+      } catch {
+        continue;
+      }
+
+      files.push({
+        path: nextRelative,
+        content,
+        size: stats.size,
+        language: languageFromPath(nextRelative),
+      });
+    }
+  };
+
+  await walk(rootPath, '');
+  return files;
+}
+
+/**
+ * Recompute architecture and code intelligence for an already-analyzed
+ * repository.
+ *
+ * Both are computed once, at analysis time, so a saved project keeps whatever
+ * the detectors produced back then. When they improve, older projects would keep
+ * reporting stale results. Re-reading the local clone lets the server refresh
+ * them in place — no re-clone, no full re-analysis.
+ */
+async function refreshArchitecture(repoPath, analysis) {
+  if (!repoPath || !analysis) return null;
+  const files = await readSourceFiles(repoPath);
+  if (!files.length) return null;
+
+  const readme = await readRepositoryReadme(repoPath);
+  const runFlow = extractRunFlowFromReadme(readme);
+
+  return {
+    architecture: buildArchitectureIntelligence(files, analysis.repoName),
+    codeIntelligence: buildCodeIntelligence(files).summary,
+    runFlow: runFlow
+      ? { ...runFlow, found: true }
+      : { steps: [], stepTitles: [], prompt: '', found: false },
+    description: extractProjectDescription(readme, analysis.repoName, analysis.summary?.narrative || ''),
+  };
+}
+
 module.exports = {
   analyzeRepository,
   getCommitHistory,
   getRunFlow,
+  refreshArchitecture,
 };

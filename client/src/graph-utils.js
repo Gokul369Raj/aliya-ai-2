@@ -1,16 +1,102 @@
+/**
+ * Data-visualisation palette.
+ *
+ * Rules this palette was built to satisfy (see DESIGN.md):
+ *  1. Every colour clears **3:1** contrast against the cream canvas `#f3eee7`,
+ *     so a node or a bar is visible as a shape, not just a tint. Most clear
+ *     4.5:1, which means they are also safe as text.
+ *  2. Hues are spread and stay distinguishable under the common forms of
+ *     colour-vision deficiency (deuteranopia / protanopia / tritanopia), which
+ *     rules out the usual red-vs-green pairings.
+ *  3. Green and pink are the brand accents, so they lead the palette — but as
+ *     *darkened* variants. The brand neon green `#0cb531` only reaches 2.37:1
+ *     on cream and must never be used as a data fill.
+ *
+ * The standard Okabe-Ito / ColorBrewer values are tuned for a white page and
+ * several of them fall below 3:1 here, so the hues were kept and re-tuned
+ * darker rather than copied verbatim.
+ *
+ * Verified by `test-theme-contrast.js` — run it before changing a value.
+ */
+export const VIZ_PALETTE = {
+  green: '#0a7d24',
+  pink: '#c81e4a',
+  blue: '#1f6fb2',
+  indigo: '#332288',
+  teal: '#0f766e',
+  // amber / vermillion / neutral are also used as *label text* (layer chips in
+  // Flow Explorer), not only as graph fills, so they carry the 4.5:1 text
+  // floor rather than the 3:1 graphics one.
+  amber: '#a34e0a',
+  vermillion: '#b03a0b',
+  violet: '#6d28d9',
+  plum: '#882255',
+  slate: '#334155',
+  cyan: '#0e7490',
+  olive: '#5f6212',
+  mauve: '#a21caf',
+  rust: '#92400e',
+  navy: '#1e3a8a',
+  wine: '#9f1239',
+  ochre: '#a16207',
+  ochreDeep: '#8a6209',
+  amberDeep: '#9a4a08',
+  neutral: '#6b665d',
+  // Canvas-aware greys for de-emphasised states — they fade *toward* the cream
+  // canvas rather than to near-black.
+  dimEdge: '#ded7cb',
+  dimLabel: '#8a8175',
+}
+
+/**
+ * Vivid fills for graph **nodes**.
+ *
+ * A node is a large shape with an ink outline, not a label, so it carries the
+ * 3:1 graphics floor — not the 4.5:1 text floor that VIZ_PALETTE exists to
+ * satisfy. That difference is the whole reason this second table exists: the
+ * text-safe palette is deliberately dark, and dark fills read as mud once the
+ * graph is drawn on paper.
+ *
+ * **Never use these for text.** Labels, chips and the flow-explorer layer name
+ * stay on VIZ_PALETTE / CATEGORY_COLORS.
+ */
+export const VIZ_NODE_PALETTE = {
+  orange: '#c2410c',
+  blue: '#2563eb',
+  cyan: '#0891b2',
+  violet: '#7c3aed',
+  green: '#15803d',
+  slate: '#475569',
+  indigo: '#4338ca',
+  pink: '#db2777',
+  teal: '#0d9488',
+  red: '#dc2626',
+  rust: '#b45309',
+  magenta: '#a21caf',
+  crimson: '#be185d',
+  olive: '#4d7c0f',
+  steel: '#64748b',
+  navy: '#1d4ed8',
+  wine: '#9f1239',
+  sky: '#0284c7',
+  charcoal: '#334155',
+  grey: '#6b7280',
+  folder: '#64748b',
+}
+
 export const CATEGORY_COLORS = {
-  frontend: '#0ea5e9',
-  backend: '#2563eb',
-  auth: '#8b5cf6',
-  payment: '#10b981',
-  database: '#ef4444',
-  config: '#eab308',
-  testing: '#f97316',
-  api: '#06b6d4',
-  ui: '#14b8a6',
-  utils: '#64748b',
-  folder: '#334155',
-  unknown: '#475569',
+  frontend: VIZ_PALETTE.blue,
+  backend: VIZ_PALETTE.indigo,
+  auth: VIZ_PALETTE.violet,
+  payment: VIZ_PALETTE.green,
+  database: VIZ_PALETTE.vermillion,
+  config: VIZ_PALETTE.amber,
+  testing: VIZ_PALETTE.olive,
+  api: VIZ_PALETTE.cyan,
+  ui: VIZ_PALETTE.teal,
+  utils: '#5e5850',
+  folder: '#475569',
+  unknown: VIZ_PALETTE.neutral,
 }
 
 export const CATEGORY_LABELS = {
@@ -28,35 +114,57 @@ export const CATEGORY_LABELS = {
   unknown: 'Other',
 }
 
+/**
+ * The same category hues as CATEGORY_COLORS, but taken from the vivid node
+ * table. `CATEGORY_COLORS` is also painted as *label text* (FlowExplorerPanel,
+ * the PDF), so it must stay dark; node fills do not have that constraint.
+ * Use this for anything that colours a shape, and CATEGORY_COLORS for text.
+ */
+export const CATEGORY_NODE_COLORS = {
+  frontend: VIZ_NODE_PALETTE.blue,
+  backend: VIZ_NODE_PALETTE.indigo,
+  auth: VIZ_NODE_PALETTE.violet,
+  payment: VIZ_NODE_PALETTE.green,
+  database: VIZ_NODE_PALETTE.red,
+  config: VIZ_NODE_PALETTE.rust,
+  testing: VIZ_NODE_PALETTE.olive,
+  api: VIZ_NODE_PALETTE.cyan,
+  ui: VIZ_NODE_PALETTE.teal,
+  utils: VIZ_NODE_PALETTE.steel,
+  folder: VIZ_NODE_PALETTE.folder,
+  unknown: VIZ_NODE_PALETTE.grey,
+}
+
+// Node fills — the vivid table. Same 3:1 graphics contract as VIZ_NODE_PALETTE.
 export const LANGUAGE_COLORS = {
-  javascript: '#eab308',
-  typescript: '#2563eb',
-  react: '#0ea5e9',
-  html: '#ea580c',
-  css: '#8b5cf6',
-  json: '#10b981',
-  markdown: '#ef4444',
-  python: '#2563eb',
-  java: '#dc2626',
-  go: '#06b6d4',
-  rust: '#ea580c',
-  php: '#7c3aed',
-  ruby: '#be123c',
-  shell: '#15803d',
-  c: '#475569',
-  'c++': '#1d4ed8',
-  csharp: '#16a34a',
-  swift: '#ea580c',
-  kotlin: '#7c3aed',
-  scala: '#dc2626',
-  dart: '#0284c7',
-  vue: '#14b8a6',
-  angular: '#b91c1c',
-  svelte: '#ea580c',
-  nextjs: '#d4d4d8',
-  nuxtjs: '#10b981',
-  unknown: '#64748b',
-  folder: '#334155',
+  javascript: VIZ_NODE_PALETTE.orange,
+  typescript: VIZ_NODE_PALETTE.blue,
+  react: VIZ_NODE_PALETTE.cyan,
+  html: VIZ_NODE_PALETTE.red,
+  css: VIZ_NODE_PALETTE.violet,
+  json: VIZ_NODE_PALETTE.green,
+  markdown: VIZ_NODE_PALETTE.slate,
+  python: VIZ_NODE_PALETTE.indigo,
+  java: VIZ_NODE_PALETTE.pink,
+  go: VIZ_NODE_PALETTE.teal,
+  rust: VIZ_NODE_PALETTE.rust,
+  php: VIZ_NODE_PALETTE.magenta,
+  ruby: VIZ_NODE_PALETTE.crimson,
+  shell: VIZ_NODE_PALETTE.olive,
+  c: VIZ_NODE_PALETTE.steel,
+  'c++': VIZ_NODE_PALETTE.navy,
+  csharp: VIZ_NODE_PALETTE.green,
+  swift: VIZ_NODE_PALETTE.orange,
+  kotlin: VIZ_NODE_PALETTE.violet,
+  scala: VIZ_NODE_PALETTE.wine,
+  dart: VIZ_NODE_PALETTE.sky,
+  vue: VIZ_NODE_PALETTE.teal,
+  angular: VIZ_NODE_PALETTE.red,
+  svelte: VIZ_NODE_PALETTE.orange,
+  nextjs: VIZ_NODE_PALETTE.charcoal,
+  nuxtjs: VIZ_NODE_PALETTE.green,
+  unknown: VIZ_NODE_PALETTE.grey,
+  folder: VIZ_NODE_PALETTE.folder,
 }
 
 export const LANGUAGE_LABELS = {
@@ -232,7 +340,7 @@ export function getNodeCategoryLabel(node) {
 
 export function getNodeCategoryColor(node) {
   const categoryKey = getNodeCategoryLabel(node)
-  return CATEGORY_COLORS[categoryKey] || CATEGORY_COLORS.unknown
+  return CATEGORY_NODE_COLORS[categoryKey] || CATEGORY_NODE_COLORS.unknown
 }
 
 export function getNodeColor(node) {
