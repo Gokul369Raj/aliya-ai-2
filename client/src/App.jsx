@@ -29,16 +29,6 @@ import { generateRepositoryPdfReport } from './utils/pdfReport'
 import { buildVisibleGraph, formatBytes, phaseLabel, LANGUAGE_COLORS, LANGUAGE_LABELS, getNodeLanguageLabel, CATEGORY_NODE_COLORS, CATEGORY_LABELS, getNodeCategoryLabel, getNodeCategoryColor } from './graph-utils'
 import './App.css'
 
-// Logo cloud on the landing screen. Built from the languages the analyzer
-// actually recognises (LANGUAGE_LABELS) so the strip never over-claims.
-const LANDING_LANGUAGES = [
-  'javascript', 'typescript', 'python', 'go', 'rust', 'java', 'php', 'ruby',
-  'c', 'c++', 'csharp', 'swift', 'kotlin', 'scala', 'dart', 'shell',
-  'react', 'vue', 'svelte', 'angular', 'nextjs', 'nuxtjs',
-]
-  .filter((key) => LANGUAGE_LABELS[key])
-  .map((key) => ({ key, label: LANGUAGE_LABELS[key] }))
-
 const DEFAULT_CONFIG = {
   provider: 'openai',
   model: '',
@@ -1293,18 +1283,6 @@ function App() {
             )}
           </div>
         </main>
-
-        <section className="tv-cloud" aria-label="Supported languages">
-          <p className="tv-cloud-label">Scans every language your repo already uses</p>
-          <div className="tv-cloud-row">
-            {LANDING_LANGUAGES.map((language) => (
-              <span className="tv-cloud-chip" key={language.key}>
-                <i aria-hidden="true" />
-                {language.label}
-              </span>
-            ))}
-          </div>
-        </section>
 
         <footer className="tv-footer">
           <span>Built for developers who need clarity, fast.</span>
