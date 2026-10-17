@@ -7361,6 +7361,32 @@ button.graph-control-btn[title="Focus Selected"] {
   background: var(--accent);
 }
 
+/* ── Landing fits one screen ───────────────────────────────────────────────
+   `.tv-hero` was forced to `calc(100svh - nav)`, so nav + hero + footer always
+   summed to a full screen *plus* the footer — which is why the "Created by"
+   badge sat below the fold on every laptop. Let the hero take whatever is left
+   after the nav and footer instead of claiming the whole screen for itself. */
+.tv-hero {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: clamp(32px, 6vh, 72px) 40px;
+}
+
+.tv-landing {
+  overflow-y: hidden;
+}
+
+/* On a genuinely short window, clipping is worse than scrolling. */
+@media (max-height: 620px) {
+  .tv-landing {
+    overflow-y: auto;
+  }
+
+  .tv-hero {
+    min-height: auto;
+  }
+}
+
 /* The repo chip used to grow (`flex: 1`) and that was the only thing pushing the
    actions to the right edge. Now that it is a fixed-size chip, the actions need
    to claim the remaining space themselves. */
