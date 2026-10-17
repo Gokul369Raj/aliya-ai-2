@@ -7395,3 +7395,75 @@ button.graph-control-btn[title="Focus Selected"] {
     animation: none;
   }
 }
+
+/* ── Navbar repo chip ──────────────────────────────────────────────────────
+   This block was still the old glass treatment: 12px and 999px radii, a dark
+   translucent tint, neon-green icon fills, and `flex: 1` — which stretched the
+   bordered box across the whole navbar so a small status chip read as the
+   loudest thing on screen. */
+.nav-repo-context {
+  flex: 0 1 auto;
+  max-width: 520px;
+  gap: 8px;
+  margin: 0 16px;
+  padding: 4px 10px;
+  border: var(--border-w) solid var(--ink);
+  border-radius: 0;
+  background: var(--bg-inset);
+  box-shadow: none;
+}
+
+.nav-repo-icon {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: var(--card);
+  color: var(--accent-text);
+}
+
+.nav-repo-copy strong {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.nav-repo-copy span {
+  color: var(--text-secondary);
+  font-size: 9.5px;
+}
+
+.nav-ai-status {
+  padding: 2px 7px;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: var(--card);
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.nav-ai-status.is-ready {
+  border-color: var(--ink);
+  background: var(--card);
+  color: var(--text-primary);
+}
+
+.nav-ai-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 0;
+  background: var(--text-muted);
+}
+
+.nav-ai-status.is-ready .nav-ai-dot {
+  background: var(--accent);
+}
+
+/* The repo chip used to grow (`flex: 1`) and that was the only thing pushing the
+   actions to the right edge. Now that it is a fixed-size chip, the actions need
+   to claim the remaining space themselves. */
+.nav-actions {
+  margin-left: auto;
+}
